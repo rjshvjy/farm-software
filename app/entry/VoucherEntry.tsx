@@ -514,6 +514,39 @@ export default function VoucherEntry({
   // honestly lives here. Layer 2 (data): the chosen master value's notes,
   // appended where one exists — that part improves as masters admin fills
   // notes in, with no screen change.
+  //
+  // The strip sits directly under the entry card (not pinned to the bottom of
+  // the window) and names the field in bold. Both changes are deliberate: a
+  // hint 600px from the cursor in the shape of a page footer is invisible,
+  // however correct its text. Named + near + tinted reads as an answer to the
+  // question the cursor just asked.
+
+  // Field name for the bold prefix, keyed the same as helpFor.
+  const FIELD_LABEL: Record<string, string> = {
+    date: "Payment date",
+    mode: "Mode",
+    payee: "Payee",
+    pfrom: "Period from",
+    pto: "Period to",
+    party: "Party",
+    costnature: "Cost nature",
+    entity: "Entity",
+    farm: "Farm",
+    block: "Block",
+    costobject: "Cost object",
+    activity: "Activity",
+    capex: "Capex",
+    qty: "Qty",
+    unit: "Unit",
+    mandays: "Mandays",
+    rate: "Rate",
+    amount: "Amount",
+    narration: "Narration",
+    linepayee: "Payee (this line)",
+    lineparty: "Party (this line)",
+    linecostnature: "Cost nature (this line)",
+  };
+
   function helpFor(key: string | null): string {
     switch (key) {
       case "date":
@@ -1323,6 +1356,23 @@ export default function VoucherEntry({
         </div>
       </section>
 
+      {/* ---------------- help strip: anchored under the entry card --------
+          Fixed height (h-10) so nothing jumps as the text changes length.
+          Left accent bar + tint + bold field name: it must read as a reply
+          to the cursor, not as page furniture. Roughly 40px from whatever
+          field has focus, which is the whole point. -------------------- */}
+      <div className="h-10 mb-4 flex items-center gap-2 rounded border border-input border-l-4 border-l-primary bg-muted/60 px-3">
+        <span className="text-xs leading-snug line-clamp-2">
+          {focusKey && FIELD_LABEL[focusKey] && (
+            <strong className="font-semibold">
+              {FIELD_LABEL[focusKey]}
+              {" · "}
+            </strong>
+          )}
+          <span className="text-muted-foreground">{helpFor(focusKey)}</span>
+        </span>
+      </div>
+
       {/* ---------------- preview panel: what save will do ---------------- */}
       {(redMsgs.length > 0 || amberMsgs.length > 0) && allLines.length > 0 && (
         <section className="mb-4 text-sm space-y-2">
@@ -1445,12 +1495,6 @@ export default function VoucherEntry({
         </section>
       )}
 
-      {/* ---------------- help strip: the Tally line ---------------- */}
-      <div className="fixed bottom-0 inset-x-0 border-t border-input bg-background/95 backdrop-blur">
-        <div className="max-w-6xl mx-auto px-4 py-2 text-xs text-muted-foreground truncate">
-          {helpFor(focusKey)}
-        </div>
-      </div>
     </main>
   );
 }
