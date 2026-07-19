@@ -224,6 +224,12 @@ export default function VoucherEntry({
   // ---- help strip: which field has focus ----------------------------------
   const [focusKey, setFocusKey] = useState<string | null>(null);
 
+  // Has the person typed in Amount themselves? Until they do, Amount is
+  // filled from the arithmetic they were doing on paper anyway (labours x
+  // rate, or quantity x rate). The moment they overtype it, we stop
+  // interfering — the paper slip is the authority, not our multiplication.
+  const [amountTouched, setAmountTouched] = useState(false);
+
   const amountRef = useRef<HTMLInputElement>(null);
   const partyInputRef = useRef<HTMLInputElement>(null);
 
@@ -260,6 +266,74 @@ export default function VoucherEntry({
     const n = parseFloat(s);
     return Number.isFinite(n) ? n : null;
   };
+
+  // ---- rate: what is this rate PER? ---------------------------------------
+  // The workbook shows three habits in one field:
+  //   "12 women labours @ Rs.220 per head"      -> rate is per MANDAY
+  //   "@ Rs.20 per tree, total 956 trees"       -> rate is per TREE (qty unit)
+  //   "20 labours ... 956 trees"                -> mandays AND qty, day wage
+  // The rule, shown to the user rather than assumed: rate belongs to mandays
+  // when mandays is present, otherwise to quantity.
+  function rateBasis(l: EditLine): "MANDAY" | "UNIT" | "NONE" {
+    if (l.mandays.trim() !== "") return "MANDAY";
+    if (l.qty.trim() !== "" || l.unit) return "UNIT";
+    return "NONE";
+  }
+
+  function rateLabel(l: EditLine): string {
+    const b = rateBasis(l);
+    if (b === "MANDAY") return "Rate \u20b9 / labour";
+    if (b === "UNIT" && l.unit) return `Rate \u20b9 / ${l.unit}`;
+    return "Rate \u20b9";
+  }
+
+  /** The amount the arithmetic implies, or null when it implies nothing. */
+  function impliedAmount(l: EditLine): number | null {
+    const r = num(l.rate);
+    if (r === null) return null;
+    const b = rateBasis(l);
+    if (b === "MANDAY") {
+      const m = num(l.mandays);
+      return m === null ? null : Math.round(m * r * 100) / 100;
+    }
+    if (b === "UNIT") {
+      const q = num(l.qty);
+      return q === null ? null : Math.round(q * r * 100) / 100;
+    }
+    return null;
+  }
+
+  // What the columns already hold — shown beside Narration so she stops
+  // retyping the farm, crop and labour count into prose and starts writing
+  // the part no column can hold. Deliberately NOT used to auto-generate the
+  // narration: an independent account is the last chance to catch a wrong
+  // posting, and a narration assembled from the fields can never disagree
+  // with them.
+  function alreadyRecorded(l: EditLine): string {
+    const bits: string[] = [];
+    if (l.farm) bits.push(l.farm);
+    if (l.block && l.block !== "YET TO ASSIGN") bits.push(l.block);
+    if (l.cost_object) bits.push(l.cost_object);
+    if (l.activity) bits.push(l.activity);
+    if (l.cost_nature) bits.push(l.cost_nature);
+    if (l.mandays.trim()) bits.push(`${l.mandays} labours`);
+    if (l.qty.trim()) bits.push(`${l.qty} ${l.unit || ""}`.trim());
+    const a = num(l.amount);
+    if (a !== null) bits.push(`\u20b9 ${formatINR(a)}`);
+    return bits.join(" \u00b7 ");
+  }
+
+  // "Salary + Petrol + cellphone recharge" — 279 such rows in the workbook,
+  // bundled because splitting in a spreadsheet meant retyping a whole row.
+  // Here it is three keystrokes, so the screen says so. A nudge, never a block.
+  function looksBundled(text: string): boolean {
+    const t = text.trim();
+    if (t.length < 8) return false;
+    if (/\s\+\s/.test(t)) return true;                 // "a + b"
+    if (/\b\w+\s+and\s+\w+\s+(charges|expenses|allowance|wages)\b/i.test(t))
+      return true;
+    return false;
+  }
 
   // Effective (post-inheritance) values for one line — the same resolution
   // the payload applies, reused by every preview check so they cannot drift
@@ -404,7 +478,25 @@ export default function VoucherEntry({
   // ---- line handling -------------------------------------------------------
 
   function setD<K extends keyof EditLine>(k: K, v: EditLine[K]) {
-    setDraft((d) => ({ ...d, [k]: v }));
+    setDraft((d) => {
+      const next = { ...d, [k]: v };
+
+      // Choosing an activity preselects the unit it expects (masters own this
+      // — WEEDICIDE SPRAY expects ACRE, FENCE VINE REMOVAL expects FEET).
+      // Overridable; only fills a blank, never overwrites a choice.
+      if (k === "activity") {
+        const req = activityByCode.get(String(v))?.required_unit;
+        if (req && !next.unit) next.unit = req;
+      }
+
+      // Amount follows the arithmetic until the person overtypes it.
+      if (!amountTouched && k !== "amount") {
+        const implied = impliedAmount(next);
+        if (implied !== null) next.amount = String(implied);
+      }
+      return next;
+    });
+    if (k === "amount") setAmountTouched(true);
     setDraftMsg(null);
     setArmed(false); // any edit disarms a pending confirm
   }
@@ -434,6 +526,7 @@ export default function VoucherEntry({
       setDraft({ ...draft, qty: "", mandays: "", amount: "" });
     }
 
+    setAmountTouched(false);
     setDraftMsg(null);
     setArmed(false);
     setTimeout(() => amountRef.current?.focus(), 0);
@@ -453,6 +546,7 @@ export default function VoucherEntry({
     setEditBackup(lines[i]);
     setEditingIndex(i);
     setDraft(lines[i]);
+    setAmountTouched(true); // an existing line's amount is already decided
     setDraftMsg(null);
     setArmed(false);
     setTimeout(() => amountRef.current?.focus(), 0);
@@ -467,6 +561,7 @@ export default function VoucherEntry({
     setEditingIndex(null);
     setEditBackup(null);
     setDraft({ ...emptyLine(), cost_nature: draft.cost_nature });
+    setAmountTouched(false);
     setDraftMsg(null);
     setArmed(false);
   }
@@ -550,6 +645,7 @@ export default function VoucherEntry({
       // day is usually one kind of spending too. Everything else on the line
       // clears.
       setDraft({ ...emptyLine(), cost_nature: draft.cost_nature });
+      setAmountTouched(false);
       setHeaderPayee("");
       setHeaderParty("");
       setPeriodFromText("");
@@ -662,20 +758,26 @@ export default function VoucherEntry({
       case "qty": {
         const a = activityByCode.get(draft.activity);
         return a?.required_unit
-          ? `How much work — ${a.code} expects ${a.required_unit}. Blank saves, but is flagged.`
-          : "How much work, in the unit alongside. Optional where the activity has no required unit.";
+          ? `How much was covered — ${a.code} is measured in ${a.required_unit}. This is the denominator every ₹-per-unit standard depends on. Blank saves, but is flagged.`
+          : "How much was covered — acres, trees, feet, bags. Optional where the activity has no standard unit, but fill it whenever you can: no quantity means no cost-per-unit later.";
       }
       case "unit":
-        return "Unit for the quantity.";
+        return "What the quantity is counted in. Fills itself from the activity where the master says so — change it if this line is different.";
       case "mandays":
-        return "Workers × days. Optional — but if rate is also filled, amount should equal mandays × rate (a warning, not a refusal).";
-      case "rate":
-        return "₹ per manday.";
+        return "How many labours, the way you write it on the slip. Half days are fine — 6.5. Leave blank for piece work paid per tree or per foot.";
+      case "rate": {
+        const b = rateBasis(draft);
+        if (b === "MANDAY")
+          return "₹ per labour per day. Amount fills itself as labours × rate — overtype it if the slip says otherwise.";
+        if (b === "UNIT" && draft.unit)
+          return `₹ per ${draft.unit} — piece work. Amount fills itself as how-much-covered × rate.`;
+        return "₹ per labour if you filled labours, otherwise ₹ per unit of what was covered.";
+      }
       case "amount":
         return "₹ paid on this line. Enter commits the line and opens the next.";
       case "narration": {
         const floor = narrFloor(draft.activity);
-        return `What this line was for — at least ${floor} characters. The last chance to catch a wrong posting. Copies into the next line, so a twenty-line muster is typed once.`;
+        return `Say what the boxes cannot — which part of the block, why it was needed, the chemical and dose, anything unusual. At least ${floor} characters. Do not repeat the farm, crop or labour count: those are already recorded. Copies into the next line.`;
       }
       case "linepayee":
         return "Payee for this line only, when it differs from the header's.";
@@ -704,6 +806,30 @@ export default function VoucherEntry({
     "focus:outline-none focus:ring-2 focus:ring-ring";
   const labelCls = "block text-sm text-muted-foreground mb-1";
   const numCls = inputCls + " text-right tabular-nums";
+
+  /**
+   * One labelled band of the line. The heading is the QUESTION the fields
+   * answer — Where, What work, On what, How much, Who and why. Naming the
+   * question is the whole point: it turns nine identical dropdowns into
+   * five small decisions, and it tells the accountant which of them are
+   * the MIS tags rather than the measurements.
+   */
+  function FieldBand({
+    title,
+    children,
+  }: {
+    title: string;
+    children: React.ReactNode;
+  }) {
+    return (
+      <div className="mb-3">
+        <div className="text-sm font-medium text-muted-foreground mb-1.5 border-b border-input pb-1">
+          {title}
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-3">{children}</div>
+      </div>
+    );
+  }
 
   function Sel({
     value,
@@ -1228,6 +1354,7 @@ export default function VoucherEntry({
               cancelEdit(); // put the line back exactly as it was
             } else {
               setDraft({ ...emptyLine(), narration: draft.narration });
+              setAmountTouched(false);
               setDraftMsg(null);
             }
           }
@@ -1258,17 +1385,22 @@ export default function VoucherEntry({
           )}
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-3">
-          <div>
-            <label className={labelCls}>Entity</label>
-            <Sel
-              value={draft.entity}
-              onChange={(v) => setD("entity", v)}
-              options={ENTITIES.map((e) => ({ code: e, label: e }))}
-              onFocus={() => setFocusKey("entity")}
-            />
-          </div>
-          <div>
+        {/* ============================================================
+            THE LINE, IN THE ORDER IT IS WRITTEN.
+
+            The workbook's narrations are remarkably consistent:
+              "30 labours Manuring work North thottam Young coconut trees
+               South side 110 Nos"
+            i.e. how many people -> what work -> where -> on what, how many.
+            The old layout asked for Entity and Capex first (near-constant,
+            so trained the eye to tab past) and Mandays almost last. These
+            five bands follow the writing order instead, and name the
+            question each answers.
+            ============================================================ */}
+
+        {/* -------- WHERE -------- */}
+        <FieldBand title="Where">
+          <div className="md:col-span-2">
             <label className={labelCls}>Farm</label>
             <Sel
               value={draft.farm}
@@ -1281,7 +1413,7 @@ export default function VoucherEntry({
               onFocus={() => setFocusKey("farm")}
             />
           </div>
-          <div>
+          <div className="md:col-span-2">
             <label className={labelCls}>
               Block{" "}
               {draft.farm && farmHasBlocks(draft.farm) && (
@@ -1303,8 +1435,69 @@ export default function VoucherEntry({
               onFocus={() => setFocusKey("block")}
             />
           </div>
+          {/* Entity and Capex are BUSINESS/RECURRING on almost every line.
+              Kept visible and changeable, but last in the band so they do
+              not stand between the person and the work. */}
           <div>
-            <label className={labelCls}>Cost object</label>
+            <label className={labelCls}>Entity</label>
+            <Sel
+              value={draft.entity}
+              onChange={(v) => setD("entity", v)}
+              options={ENTITIES.map((e) => ({ code: e, label: e }))}
+              onFocus={() => setFocusKey("entity")}
+            />
+          </div>
+          <div>
+            <label className={labelCls}>Capex</label>
+            <Sel
+              value={draft.capex_flag}
+              onChange={(v) => setD("capex_flag", v)}
+              options={
+                masters["CAPEX_FLAG"] ?? [
+                  { code: "RECURRING", label: "RECURRING" },
+                  { code: "CAPEX", label: "CAPEX" },
+                ]
+              }
+              onFocus={() => setFocusKey("capex")}
+            />
+          </div>
+        </FieldBand>
+
+        {/* -------- WHAT WORK -------- */}
+        <FieldBand title="What work">
+          <div className="md:col-span-4">
+            <label className={labelCls}>Activity (type to search)</label>
+            <Combo
+              value={draft.activity}
+              display={
+                activityByCode.get(draft.activity)?.label ?? draft.activity
+              }
+              onChange={(v) => setD("activity", v)}
+              options={(masters["ACTIVITY"] ?? []).map((a) => ({
+                code: a.code,
+                label: a.label,
+                sub: a.required_unit ? `expects ${a.required_unit}` : undefined,
+              }))}
+              placeholder="e.g. weed, spray, manuring, fence…"
+              onFocus={() => setFocusKey("activity")}
+            />
+          </div>
+          <div className="md:col-span-2">
+            <label className={labelCls}>Cost nature</label>
+            <Sel
+              value={draft.cost_nature}
+              onChange={(v) => setD("cost_nature", v)}
+              allowBlank
+              options={masters["COST_NATURE"] ?? []}
+              onFocus={() => setFocusKey("linecostnature")}
+            />
+          </div>
+        </FieldBand>
+
+        {/* -------- ON WHAT -------- */}
+        <FieldBand title="On what">
+          <div className="md:col-span-2">
+            <label className={labelCls}>Cost object (crop / land / asset)</label>
             <Combo
               value={draft.cost_object}
               display={
@@ -1322,39 +1515,15 @@ export default function VoucherEntry({
             />
           </div>
           <div>
-            <label className={labelCls}>Capex</label>
-            <Sel
-              value={draft.capex_flag}
-              onChange={(v) => setD("capex_flag", v)}
-              options={
-                masters["CAPEX_FLAG"] ?? [
-                  { code: "RECURRING", label: "RECURRING" },
-                  { code: "CAPEX", label: "CAPEX" },
-                ]
-              }
-              onFocus={() => setFocusKey("capex")}
-            />
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-3">
-          <div className="md:col-span-2">
-            <label className={labelCls}>Activity (type to search)</label>
-            <Combo
-              value={draft.activity}
-              display={activityByCode.get(draft.activity)?.label ?? draft.activity}
-              onChange={(v) => setD("activity", v)}
-              options={(masters["ACTIVITY"] ?? []).map((a) => ({
-                code: a.code,
-                label: a.label,
-                sub: a.required_unit ? `expects ${a.required_unit}` : undefined,
-              }))}
-              placeholder="e.g. spray, fence, tholuvam…"
-              onFocus={() => setFocusKey("activity")}
-            />
-          </div>
-          <div>
-            <label className={labelCls}>Qty</label>
+            <label className={labelCls}>
+              How much covered
+              {activityByCode.get(draft.activity)?.required_unit && (
+                <span className="text-amber-600 dark:text-amber-400">
+                  {" "}
+                  (needed)
+                </span>
+              )}
+            </label>
             <input
               className={numCls}
               value={draft.qty}
@@ -1372,30 +1541,29 @@ export default function VoucherEntry({
               onFocus={() => setFocusKey("unit")}
             />
           </div>
-          <div>
-            <label className={labelCls}>Cost nature</label>
-            <Sel
-              value={draft.cost_nature}
-              onChange={(v) => setD("cost_nature", v)}
-              allowBlank
-              options={masters["COST_NATURE"] ?? []}
-              onFocus={() => setFocusKey("linecostnature")}
-            />
+          <div className="md:col-span-2 flex items-end">
+            <span className="text-sm text-muted-foreground">
+              acres, trees, feet — whatever the standard is measured in
+            </span>
           </div>
-        </div>
+        </FieldBand>
 
-        <div className="grid grid-cols-2 md:grid-cols-6 gap-3 items-end">
+        {/* -------- HOW MUCH -------- */}
+        <FieldBand title="How much">
           <div>
-            <label className={labelCls}>Mandays</label>
+            {/* Every narration in the workbook says "labours", never
+                "mandays". Their word first, ours in brackets. */}
+            <label className={labelCls}>Labours (mandays)</label>
             <input
               className={numCls}
               value={draft.mandays}
               onChange={(e) => setD("mandays", e.target.value)}
               onFocus={() => setFocusKey("mandays")}
+              placeholder="6.5"
             />
           </div>
           <div>
-            <label className={labelCls}>Rate ₹</label>
+            <label className={labelCls}>{rateLabel(draft)}</label>
             <input
               className={numCls}
               value={draft.rate}
@@ -1404,7 +1572,12 @@ export default function VoucherEntry({
             />
           </div>
           <div>
-            <label className={labelCls}>Amount ₹</label>
+            <label className={labelCls}>
+              Amount ₹
+              {!amountTouched && impliedAmount(draft) !== null && (
+                <span className="text-muted-foreground"> (calculated)</span>
+              )}
+            </label>
             <input
               ref={amountRef}
               className={numCls}
@@ -1416,7 +1589,30 @@ export default function VoucherEntry({
               }}
             />
           </div>
+          <div className="md:col-span-3 flex items-end">
+            <span className="text-sm text-muted-foreground">
+              {rateBasis(draft) === "MANDAY"
+                ? "Half days are fine — 6.5 labours."
+                : rateBasis(draft) === "UNIT" && draft.unit
+                  ? `Piece work: ₹ per ${draft.unit} × how much covered.`
+                  : "Day wage: fill labours. Piece work: fill how much covered."}
+            </span>
+          </div>
+        </FieldBand>
+
+        {/* -------- WHO AND WHY -------- */}
+        <FieldBand title="Who and why">
           <div className="md:col-span-2">
+            <label className={labelCls}>Payee (this line)</label>
+            <input
+              className={inputCls}
+              value={draft.payee}
+              onChange={(e) => setD("payee", e.target.value)}
+              onFocus={() => setFocusKey("linepayee")}
+              placeholder={headerPayee || "inherits header"}
+            />
+          </div>
+          <div className="md:col-span-4">
             <label className={labelCls}>
               Narration{" "}
               <span
@@ -1442,19 +1638,24 @@ export default function VoucherEntry({
               onKeyDown={(e) => {
                 if (e.key === "Enter") commitDraft();
               }}
+              placeholder="say what the boxes above cannot"
             />
+            {/* What the columns already hold. Stops the narration repeating
+                the farm, crop and labour count — which is most of what the
+                old sheet's narrations were spending their words on. */}
+            {alreadyRecorded(draft) && (
+              <div className="text-sm text-muted-foreground mt-1 truncate">
+                Already recorded: {alreadyRecorded(draft)}
+              </div>
+            )}
+            {looksBundled(draft.narration) && (
+              <div className="text-sm text-amber-700 dark:text-amber-400 mt-1">
+                This looks like more than one thing — Add line splits it, and
+                each part keeps its own head.
+              </div>
+            )}
           </div>
-          <div>
-            <label className={labelCls}>Payee (this line)</label>
-            <input
-              className={inputCls}
-              value={draft.payee}
-              onChange={(e) => setD("payee", e.target.value)}
-              onFocus={() => setFocusKey("linepayee")}
-              placeholder={headerPayee || "inherits header"}
-            />
-          </div>
-        </div>
+        </FieldBand>
 
         <div className="flex items-center gap-3 mt-3">
           <button
