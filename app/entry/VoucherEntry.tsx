@@ -105,7 +105,7 @@ type EditLine = {
   payee: string; // blank = inherit header payee
   narration: string;
   party_code: string; // blank = inherit header party
-  cost_nature: string; // blank = inherit header cost nature
+  cost_nature: string; // carries forward as each new line copies the one above
 };
 
 type SavedVoucher = {
@@ -190,7 +190,6 @@ export default function VoucherEntry({
   const [periodFromText, setPeriodFromText] = useState("");
   const [periodToText, setPeriodToText] = useState("");
   const [headerParty, setHeaderParty] = useState("");
-  const [headerCostNature, setHeaderCostNature] = useState("");
 
   // ---- lines: committed ones plus the one being edited --------------------
   const [lines, setLines] = useState<EditLine[]>([]);
@@ -260,7 +259,7 @@ export default function VoucherEntry({
   const eff = (l: EditLine) => ({
     payee: l.payee.trim() || headerPayee.trim(),
     party: l.party_code || headerParty,
-    costNature: l.cost_nature || headerCostNature,
+    costNature: l.cost_nature,
   });
 
   const narrFloor = (activity: string) =>
@@ -324,7 +323,7 @@ export default function VoucherEntry({
       );
     if (!e.costNature)
       redMsgs.push(
-        `Line ${n}: cost nature is needed — set it once in the header, or on the line.`,
+        `Line ${n}: cost nature is needed — labour, material, machine hire, transport, contract or other.`,
       );
     if (partyRequired && !e.party)
       redMsgs.push(
@@ -472,7 +471,10 @@ export default function VoucherEntry({
       // voucher — she is working a stack from one day, one pocket, and
       // usually one kind of spending. Lines, payee, party and periods clear.
       setLines([]);
-      setDraft(emptyLine());
+      // Cost nature survives with the date and mode: a stack of slips from one
+      // day is usually one kind of spending too. Everything else on the line
+      // clears.
+      setDraft({ ...emptyLine(), cost_nature: draft.cost_nature });
       setHeaderPayee("");
       setHeaderParty("");
       setPeriodFromText("");
@@ -529,7 +531,6 @@ export default function VoucherEntry({
     pfrom: "Period from",
     pto: "Period to",
     party: "Party",
-    costnature: "Cost nature",
     entity: "Entity",
     farm: "Farm",
     block: "Block",
@@ -544,7 +545,7 @@ export default function VoucherEntry({
     narration: "Narration",
     linepayee: "Payee (this line)",
     lineparty: "Party (this line)",
-    linecostnature: "Cost nature (this line)",
+    linecostnature: "Cost nature",
   };
 
   function helpFor(key: string | null): string {
@@ -564,14 +565,6 @@ export default function VoucherEntry({
         return "Last day the work covers. Required. Same-day work: same as period from.";
       case "party":
         return "Type to search by name or code. If nothing matches, the last row of the list adds what you typed as a new party — you never leave the voucher.";
-      case "costnature": {
-        const cn = (masters["COST_NATURE"] ?? []).find(
-          (c) => c.code === headerCostNature,
-        );
-        const base =
-          "How the money was spent: labour, material, machine hire… Default for every line; a line can override. One job, two natures → split into two lines.";
-        return cn?.notes ? `${base}  ·  ${cn.code}: ${cn.notes}` : base;
-      }
       case "entity":
         return "BUSINESS = the farms. PERSONAL = the household. FUNDING = owner money moving in or out.";
       case "farm":
@@ -613,8 +606,14 @@ export default function VoucherEntry({
         return "Payee for this line only, when it differs from the header's.";
       case "lineparty":
         return "Party for this line only, when it differs from the header's.";
-      case "linecostnature":
-        return "Cost nature for this line only — this is how one job splits into labour + machine hire.";
+      case "linecostnature": {
+        const cn = (masters["COST_NATURE"] ?? []).find(
+          (c) => c.code === draft.cost_nature,
+        );
+        const base =
+          "How the money was spent: labour, material, machine hire… Required. Carries into the next line, so a muster is set once. One job using two natures → two lines.";
+        return cn?.notes ? `${base}  ·  ${cn.code}: ${cn.notes}` : base;
+      }
       default:
         return "Tab moves forward · Enter adds the line · Esc clears the line being typed";
     }
@@ -622,10 +621,13 @@ export default function VoucherEntry({
 
   // ---- styling helpers (tokens, not colours: dark mode + the future shell) --
 
+  // One step up from the original xs/sm scale — the labels were unreadable
+  // at a desk. Inputs at text-base, labels at text-sm, with a touch more
+  // vertical padding so the taller text is not cramped.
   const inputCls =
-    "border border-input bg-background rounded px-2 py-1 text-sm w-full " +
+    "border border-input bg-background rounded px-2 py-1.5 text-base w-full " +
     "focus:outline-none focus:ring-2 focus:ring-ring";
-  const labelCls = "block text-xs text-muted-foreground mb-0.5";
+  const labelCls = "block text-sm text-muted-foreground mb-1";
   const numCls = inputCls + " text-right tabular-nums";
 
   function Sel({
@@ -750,7 +752,7 @@ export default function VoucherEntry({
           }}
         />
         {open && rows > 0 && (
-          <ul className="absolute z-20 mt-1 w-full max-h-64 overflow-auto rounded border border-input bg-background shadow-md text-sm">
+          <ul className="absolute z-20 mt-1 w-full max-h-72 overflow-auto rounded border border-input bg-background shadow-md text-base">
             {shown.map((o, i) => (
               <li
                 key={o.code}
@@ -810,7 +812,7 @@ export default function VoucherEntry({
     const codeOk = code.trim().length > 0 && !clash;
 
     return (
-      <div className="border border-input rounded-lg p-3 bg-muted/50 mt-2 text-sm">
+      <div className="border border-input rounded-lg p-3 bg-muted/50 mt-2 text-base">
         <div className="font-medium mb-2">New party</div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <div>
@@ -916,7 +918,7 @@ export default function VoucherEntry({
   // ---- render -------------------------------------------------------------
 
   const dateEcho = (text: string, iso: string | null) => (
-    <div className="text-xs mt-0.5 text-muted-foreground h-4">
+    <div className="text-sm mt-0.5 text-muted-foreground h-5">
       {text && (iso ? formatDMY(iso) : "not a date")}
     </div>
   );
@@ -925,21 +927,21 @@ export default function VoucherEntry({
     <main className="max-w-6xl mx-auto p-4 pb-24">
       {/* ---------------- title row: who, and cash in hand ---------------- */}
       <header className="flex items-baseline justify-between mb-4 gap-4 flex-wrap">
-        <h1 className="text-xl font-semibold">Voucher entry — payment</h1>
+        <h1 className="text-2xl font-semibold">Voucher entry — payment</h1>
         <div className="flex items-baseline gap-4">
-          <span className="text-sm tabular-nums">
+          <span className="text-base tabular-nums">
             Cash in hand:{" "}
             <strong>{cash === null ? "—" : `₹ ${formatINR(cash)}`}</strong>
             {sampleMode && (
-              <span className="text-xs text-muted-foreground"> (SAMPLE)</span>
+              <span className="text-sm text-muted-foreground"> (SAMPLE)</span>
             )}
           </span>
-          <span className="text-xs text-muted-foreground">{userEmail}</span>
+          <span className="text-sm text-muted-foreground">{userEmail}</span>
         </div>
       </header>
 
       {/* ---------------- header: once per paper slip ---------------- */}
-      <section className="grid grid-cols-2 md:grid-cols-7 gap-3 border border-input rounded-lg p-3 bg-muted/50 mb-4">
+      <section className="grid grid-cols-2 md:grid-cols-6 gap-3 border border-input rounded-lg p-3 bg-muted/50 mb-4">
         <div>
           <label className={labelCls}>Payment date</label>
           <input
@@ -967,7 +969,7 @@ export default function VoucherEntry({
           />
         </div>
         <div>
-          <label className={labelCls}>Payee (default for lines)</label>
+          <label className={labelCls}>Payee (all lines)</label>
           <input
             className={inputCls}
             value={headerPayee}
@@ -1007,21 +1009,6 @@ export default function VoucherEntry({
           />
           {dateEcho(periodToText, periodToISO)}
         </div>
-        <div>
-          <label className={labelCls}>
-            Cost nature (default for lines)
-          </label>
-          <Sel
-            value={headerCostNature}
-            onChange={(v) => {
-              setHeaderCostNature(v);
-              setArmed(false);
-            }}
-            allowBlank
-            options={masters["COST_NATURE"] ?? []}
-            onFocus={() => setFocusKey("costnature")}
-          />
-        </div>
         {partyRequired && (
           <div>
             <label className={labelCls}>
@@ -1057,9 +1044,9 @@ export default function VoucherEntry({
 
       {/* ---------------- committed lines ---------------- */}
       {lines.length > 0 && (
-        <table className="w-full text-sm mb-2">
+        <table className="w-full text-base mb-2">
           <thead>
-            <tr className="text-left text-xs text-muted-foreground">
+            <tr className="text-left text-sm text-muted-foreground">
               <th className="py-1">#</th>
               <th>Entity</th>
               <th>Farm</th>
@@ -1088,7 +1075,7 @@ export default function VoucherEntry({
                 <td>{l.farm}</td>
                 <td>{l.cost_object}</td>
                 <td>{activityByCode.get(l.activity)?.label ?? l.activity}</td>
-                <td>{l.cost_nature || headerCostNature || "—"}</td>
+                <td>{l.cost_nature || "—"}</td>
                 <td className="text-right tabular-nums">{l.qty}</td>
                 <td className="text-right tabular-nums">
                   {formatINR(num(l.amount) ?? 0)}
@@ -1098,7 +1085,7 @@ export default function VoucherEntry({
                 </td>
                 <td className="text-right">
                   <button
-                    className="text-xs text-muted-foreground hover:text-red-600"
+                    className="text-sm text-muted-foreground hover:text-red-600"
                     onClick={() => removeLine(i)}
                     title="Remove this unsaved line"
                   >
@@ -1236,7 +1223,7 @@ export default function VoucherEntry({
             />
           </div>
           <div>
-            <label className={labelCls}>Cost nature (this line)</label>
+            <label className={labelCls}>Cost nature</label>
             <Sel
               value={draft.cost_nature}
               onChange={(v) => setD("cost_nature", v)}
@@ -1321,7 +1308,7 @@ export default function VoucherEntry({
 
         <div className="flex items-center gap-3 mt-3">
           <button
-            className="border border-input rounded px-3 py-1.5 text-sm bg-background hover:bg-accent"
+            className="border border-input rounded px-3 py-2 text-base bg-background hover:bg-accent"
             onClick={commitDraft}
             title="Enter"
           >
@@ -1349,7 +1336,7 @@ export default function VoucherEntry({
             </div>
           )}
           {draftMsg && (
-            <span className="text-sm text-red-600 dark:text-red-400">
+            <span className="text-base text-red-600 dark:text-red-400">
               {draftMsg}
             </span>
           )}
@@ -1361,8 +1348,8 @@ export default function VoucherEntry({
           Left accent bar + tint + bold field name: it must read as a reply
           to the cursor, not as page furniture. Roughly 40px from whatever
           field has focus, which is the whole point. -------------------- */}
-      <div className="h-10 mb-4 flex items-center gap-2 rounded border border-input border-l-4 border-l-primary bg-muted/60 px-3">
-        <span className="text-xs leading-snug line-clamp-2">
+      <div className="h-12 mb-4 flex items-center gap-2 rounded border border-input border-l-4 border-l-primary bg-muted/60 px-3">
+        <span className="text-sm leading-snug line-clamp-2">
           {focusKey && FIELD_LABEL[focusKey] && (
             <strong className="font-semibold">
               {FIELD_LABEL[focusKey]}
@@ -1375,7 +1362,7 @@ export default function VoucherEntry({
 
       {/* ---------------- preview panel: what save will do ---------------- */}
       {(redMsgs.length > 0 || amberMsgs.length > 0) && allLines.length > 0 && (
-        <section className="mb-4 text-sm space-y-2">
+        <section className="mb-4 text-base space-y-2">
           {redMsgs.length > 0 && (
             <div className="border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/40 text-red-800 dark:text-red-300 rounded p-3">
               <div className="font-medium mb-1">
@@ -1421,13 +1408,13 @@ export default function VoucherEntry({
         </button>
         {armed && (
           <button
-            className="border border-input rounded px-3 py-2 text-sm"
+            className="border border-input rounded px-3 py-2 text-base"
             onClick={() => setArmed(false)}
           >
             Cancel
           </button>
         )}
-        <span className="text-sm text-muted-foreground tabular-nums">
+        <span className="text-base text-muted-foreground tabular-nums">
           {allLines.length} line{allLines.length === 1 ? "" : "s"} · total ₹{" "}
           {formatINR(linesTotal)}
         </span>
@@ -1435,25 +1422,25 @@ export default function VoucherEntry({
 
       {/* ---------------- what the database said ---------------- */}
       {lastResult && !lastResult.ok && (
-        <div className="border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/40 text-red-800 dark:text-red-300 rounded p-3 mb-4 whitespace-pre-wrap text-sm">
+        <div className="border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/40 text-red-800 dark:text-red-300 rounded p-3 mb-4 whitespace-pre-wrap text-base">
           <strong>Not saved.</strong> {lastResult.message}
           {refusedLine > 0 && refusedLine <= lines.length && (
-            <div className="mt-1 text-xs">Line {refusedLine} is highlighted above.</div>
+            <div className="mt-1 text-sm">Line {refusedLine} is highlighted above.</div>
           )}
         </div>
       )}
       {lastResult && lastResult.ok && (
         <div className="border border-green-300 dark:border-green-800 bg-green-50 dark:bg-green-950/30 rounded p-3 mb-4">
-          <div className="text-sm text-green-900 dark:text-green-300 mb-1">
+          <div className="text-base text-green-900 dark:text-green-300 mb-1">
             Saved{lastResult.entry_type === "SAMPLE" ? " (SAMPLE mode)" : ""}.
             Write this number on the slip:
           </div>
           <div className="flex items-center gap-3">
-            <span className="text-2xl font-semibold tabular-nums select-all">
+            <span className="text-3xl font-semibold tabular-nums select-all">
               {lastResult.voucher_no}
             </span>
             <button
-              className="text-xs border border-input rounded px-2 py-1"
+              className="text-sm border border-input rounded px-2 py-1"
               onClick={() =>
                 navigator.clipboard?.writeText(lastResult.voucher_no)
               }
@@ -1462,7 +1449,7 @@ export default function VoucherEntry({
             </button>
           </div>
           {lastResult.warnings.length > 0 && (
-            <div className="mt-2 text-sm text-amber-800 dark:text-amber-300">
+            <div className="mt-2 text-base text-amber-800 dark:text-amber-300">
               {lastResult.warnings.map((w, i) => (
                 <div key={i}>· {w}</div>
               ))}
@@ -1473,8 +1460,8 @@ export default function VoucherEntry({
 
       {/* ---------------- session strip: this sitting ---------------- */}
       {session.length > 0 && (
-        <section className="border border-input rounded-lg p-3 text-sm">
-          <div className="text-xs text-muted-foreground mb-1">
+        <section className="border border-input rounded-lg p-3 text-base">
+          <div className="text-sm text-muted-foreground mb-1">
             Saved this sitting — write each number on its slip:
           </div>
           <table className="w-full">
