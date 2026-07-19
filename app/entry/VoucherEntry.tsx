@@ -1641,10 +1641,15 @@ export default function VoucherEntry({
             <Sel
               value={draft.capex_flag}
               onChange={(v) => setD("capex_flag", v)}
+              // Fallback mirrors the CAPEX_FLAG master exactly: RECURRING and
+              // CAPITAL. It previously said "CAPEX", which matches nothing —
+              // the posting rule routes on CAPITAL. Dead code either way (it
+              // fires only if masters fail to load) but a wrong list is a
+              // wrong list, and §1.8 bans hardcoding for exactly this reason.
               options={
                 masters["CAPEX_FLAG"] ?? [
                   { code: "RECURRING", label: "RECURRING" },
-                  { code: "CAPEX", label: "CAPEX" },
+                  { code: "CAPITAL", label: "CAPITAL" },
                 ]
               }
               onFocus={() => setFocusKey("capex")}
