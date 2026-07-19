@@ -200,12 +200,15 @@ function FieldBand({
   title: string;
   children: React.ReactNode;
 }) {
+  // NOTE: no `overflow-hidden` here, ever. It clips the type-ahead dropdowns,
+  // which are absolutely positioned and must escape the band. Rounded corners
+  // are done per-child instead, which achieves the same look without clipping.
   return (
-    <div className="mb-4 rounded-lg overflow-hidden border border-input">
-      <div className="bg-muted px-3 py-1.5 text-sm font-semibold tracking-wide text-muted-foreground uppercase">
+    <div className="mb-4 rounded-lg border border-input">
+      <div className="bg-muted rounded-t-lg px-3 py-1.5 text-sm font-semibold tracking-wide text-muted-foreground uppercase border-b border-input">
         {title}
       </div>
-      <div className="p-3 grid grid-cols-2 md:grid-cols-6 gap-3 items-end bg-background">
+      <div className="p-3 grid grid-cols-2 md:grid-cols-6 gap-3 items-end bg-background rounded-b-lg">
         {children}
       </div>
     </div>
@@ -344,7 +347,7 @@ function Combo({
         }}
       />
       {open && rows > 0 && (
-        <ul className="absolute z-20 mt-1 w-full max-h-72 overflow-auto rounded border border-input bg-background shadow-md text-base">
+        <ul className="absolute z-50 mt-1 w-full max-h-72 overflow-auto rounded-md border border-input bg-background shadow-lg text-base">
           {shown.map((o, i) => (
             <li
               key={o.code}
