@@ -196,6 +196,14 @@ export default function VoucherEntry({
   const [draft, setDraft] = useState<EditLine>(emptyLine());
   const [draftMsg, setDraftMsg] = useState<string | null>(null);
 
+  // Which committed line the editor is currently holding, or null when the
+  // editor is composing a NEW line. Editing an unsaved line is free: nothing
+  // exists in the book yet, so §13's immutability has not started. Only after
+  // save does a line become a thing that can be corrected but never altered.
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  // The line as it was when editing began, so Cancel can put it back.
+  const [editBackup, setEditBackup] = useState<EditLine | null>(null);
+
   // ---- parties are state now: inline add appends without a refresh --------
   const [parties, setParties] = useState<PartyRow[]>(initialParties);
 
@@ -279,7 +287,15 @@ export default function VoucherEntry({
   }
 
   const draftComplete = draftProblems(draft).length === 0;
-  const allLines: EditLine[] = draftComplete ? [...lines, draft] : lines;
+  // While a committed line is being edited, the editor's contents STAND IN for
+  // that line — so the totals and the preview panel describe what will
+  // actually be saved, not the stale version still drawn in the table.
+  const allLines: EditLine[] =
+    editingIndex !== null
+      ? lines.map((l, i) => (i === editingIndex ? draft : l))
+      : draftComplete
+        ? [...lines, draft]
+        : lines;
 
   const linesTotal = allLines.reduce((s, l) => s + (num(l.amount) ?? 0), 0);
 
@@ -372,7 +388,12 @@ export default function VoucherEntry({
   }
 
   const canSave =
-    !saving && allLines.length > 0 && redMsgs.length === 0;
+    !saving &&
+    allLines.length > 0 &&
+    redMsgs.length === 0 &&
+    // An edit in progress must be finished (or cancelled) first. Saving
+    // half-edited would quietly write the incomplete version.
+    (editingIndex === null || draftComplete);
 
   // Which committed line did the DB refuse? ("Line 3: …" in its message.)
   const refusedLine =
@@ -394,20 +415,72 @@ export default function VoucherEntry({
       setDraftMsg(`Still needed: ${probs.join(", ")}.`);
       return false;
     }
-    setLines((ls) => [...ls, draft]);
-    // §5: the next line opens as a copy of this one. Amount, qty and mandays
-    // clear (they belong to the line); NARRATION NOW CARRIES FORWARD
-    // (handover §2.3) — a twenty-line muster is one narration, not twenty.
-    setDraft({ ...draft, qty: "", mandays: "", amount: "" });
+
+    if (editingIndex !== null) {
+      // Updating a line already in the list: it goes back in ITS OWN place,
+      // never to the end. Line order is the order on the paper slip.
+      const at = editingIndex;
+      setLines((ls) => ls.map((l, i) => (i === at ? draft : l)));
+      setEditingIndex(null);
+      setEditBackup(null);
+      // After an update the editor returns to composing a new line, seeded
+      // from the line just updated — the same carry-forward as any new line.
+      setDraft({ ...draft, qty: "", mandays: "", amount: "" });
+    } else {
+      setLines((ls) => [...ls, draft]);
+      // §5: the next line opens as a copy of this one. Amount, qty and mandays
+      // clear (they belong to the line); NARRATION CARRIES FORWARD
+      // (handover §2.3) — a twenty-line muster is one narration, not twenty.
+      setDraft({ ...draft, qty: "", mandays: "", amount: "" });
+    }
+
     setDraftMsg(null);
     setArmed(false);
     setTimeout(() => amountRef.current?.focus(), 0);
     return true;
   }
 
+  /** Pull a committed line back into the editor. Nothing is lost: the row
+   *  stays visible in the table, marked as the one being edited. */
+  function editLine(i: number) {
+    if (editingIndex !== null && editBackup) {
+      // Already editing something else — put that one back first, so a stray
+      // click never silently discards half an edit.
+      const prev = editingIndex;
+      const backup = editBackup;
+      setLines((ls) => ls.map((l, idx) => (idx === prev ? backup : l)));
+    }
+    setEditBackup(lines[i]);
+    setEditingIndex(i);
+    setDraft(lines[i]);
+    setDraftMsg(null);
+    setArmed(false);
+    setTimeout(() => amountRef.current?.focus(), 0);
+  }
+
+  /** Abandon the edit and restore the line exactly as it was. */
+  function cancelEdit() {
+    if (editingIndex === null) return;
+    const at = editingIndex;
+    const backup = editBackup;
+    if (backup) setLines((ls) => ls.map((l, i) => (i === at ? backup : l)));
+    setEditingIndex(null);
+    setEditBackup(null);
+    setDraft({ ...emptyLine(), cost_nature: draft.cost_nature });
+    setDraftMsg(null);
+    setArmed(false);
+  }
+
   function removeLine(i: number) {
     // Removing an UNSAVED line is allowed — nothing exists yet; immutability
     // (§13) begins at save, not at typing.
+    if (editingIndex === i) {
+      setEditingIndex(null);
+      setEditBackup(null);
+      setDraft({ ...emptyLine(), cost_nature: draft.cost_nature });
+    } else if (editingIndex !== null && editingIndex > i) {
+      setEditingIndex(editingIndex - 1); // indices shift when a row leaves
+    }
     setLines((ls) => ls.filter((_, idx) => idx !== i));
     setArmed(false);
   }
@@ -471,6 +544,8 @@ export default function VoucherEntry({
       // voucher — she is working a stack from one day, one pocket, and
       // usually one kind of spending. Lines, payee, party and periods clear.
       setLines([]);
+      setEditingIndex(null);
+      setEditBackup(null);
       // Cost nature survives with the date and mode: a stack of slips from one
       // day is usually one kind of spending too. Everything else on the line
       // clears.
@@ -615,7 +690,7 @@ export default function VoucherEntry({
         return cn?.notes ? `${base}  ·  ${cn.code}: ${cn.notes}` : base;
       }
       default:
-        return "Tab moves forward · Enter adds the line · Esc clears the line being typed";
+        return "Tab moves forward · Enter adds the line · Esc clears it (or cancels an edit) · ✎ on a line above reopens it";
     }
   }
 
@@ -1042,72 +1117,147 @@ export default function VoucherEntry({
 
       {addingParty && <AddPartyPanel typed={addingParty.typed} />}
 
-      {/* ---------------- committed lines ---------------- */}
+      {/* ---------------- lines already added to this voucher --------------
+          Its own bordered card, clearly a DIFFERENT object from the editor
+          below: these are settled, that one is in progress. Rows can be
+          edited or removed freely — nothing is in the book until Save. --- */}
       {lines.length > 0 && (
-        <table className="w-full text-base mb-2">
-          <thead>
-            <tr className="text-left text-sm text-muted-foreground">
-              <th className="py-1">#</th>
-              <th>Entity</th>
-              <th>Farm</th>
-              <th>Cost object</th>
-              <th>Activity</th>
-              <th>Nature</th>
-              <th className="text-right">Qty</th>
-              <th className="text-right">Amount ₹</th>
-              <th>Narration</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {lines.map((l, i) => (
-              <tr
-                key={i}
-                className={
-                  "border-t border-input " +
-                  (refusedLine === i + 1
-                    ? "bg-red-50 dark:bg-red-950/40 ring-1 ring-red-400"
-                    : "")
-                }
-              >
-                <td className="py-1">{i + 1}</td>
-                <td>{l.entity}</td>
-                <td>{l.farm}</td>
-                <td>{l.cost_object}</td>
-                <td>{activityByCode.get(l.activity)?.label ?? l.activity}</td>
-                <td>{l.cost_nature || "—"}</td>
-                <td className="text-right tabular-nums">{l.qty}</td>
-                <td className="text-right tabular-nums">
-                  {formatINR(num(l.amount) ?? 0)}
-                </td>
-                <td className="max-w-[16rem] truncate" title={l.narration}>
-                  {l.narration}
-                </td>
-                <td className="text-right">
-                  <button
-                    className="text-sm text-muted-foreground hover:text-red-600"
-                    onClick={() => removeLine(i)}
-                    title="Remove this unsaved line"
-                  >
-                    ✕
-                  </button>
-                </td>
+        <section className="border border-input rounded-lg p-3 mb-4">
+          <div className="text-sm text-muted-foreground mb-2">
+            Lines in this voucher
+          </div>
+          <table className="w-full text-base">
+            <thead>
+              <tr className="text-left text-sm text-muted-foreground">
+                <th className="py-1 w-8">#</th>
+                <th>Entity</th>
+                <th>Farm</th>
+                <th>Cost object</th>
+                <th>Activity</th>
+                <th>Nature</th>
+                <th className="text-right">Qty</th>
+                <th className="text-right">Amount ₹</th>
+                <th>Narration</th>
+                <th className="w-20" />
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {lines.map((l, i) => {
+                // The row being edited shows the EDITOR's live values, so the
+                // table and the fields never disagree while typing.
+                const shown = editingIndex === i ? draft : l;
+                const isEditing = editingIndex === i;
+                return (
+                  <tr
+                    key={i}
+                    className={
+                      "border-t border-input " +
+                      (isEditing
+                        ? "bg-primary/10 ring-1 ring-primary "
+                        : refusedLine === i + 1
+                          ? "bg-red-50 dark:bg-red-950/40 ring-1 ring-red-400 "
+                          : "")
+                    }
+                  >
+                    <td className="py-1.5">{i + 1}</td>
+                    <td>{shown.entity}</td>
+                    <td>{shown.farm}</td>
+                    <td>{shown.cost_object}</td>
+                    <td>
+                      {activityByCode.get(shown.activity)?.label ??
+                        shown.activity}
+                    </td>
+                    <td>{shown.cost_nature || "—"}</td>
+                    <td className="text-right tabular-nums">{shown.qty}</td>
+                    <td className="text-right tabular-nums">
+                      {formatINR(num(shown.amount) ?? 0)}
+                    </td>
+                    <td
+                      className="max-w-[16rem] truncate"
+                      title={shown.narration}
+                    >
+                      {shown.narration}
+                    </td>
+                    <td className="text-right whitespace-nowrap">
+                      {isEditing ? (
+                        <span className="text-sm text-primary font-medium">
+                          editing…
+                        </span>
+                      ) : (
+                        <>
+                          <button
+                            className="text-sm text-muted-foreground hover:text-primary px-1"
+                            onClick={() => editLine(i)}
+                            title="Edit this line"
+                          >
+                            ✎
+                          </button>
+                          <button
+                            className="text-sm text-muted-foreground hover:text-red-600 px-1"
+                            onClick={() => removeLine(i)}
+                            title="Remove this line"
+                          >
+                            ✕
+                          </button>
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </section>
       )}
 
-      {/* ---------------- the line being typed ---------------- */}
+      {/* ---------------- the editor: a new line, or one being changed -----
+          Visually separate from the list above — thicker top rule, its own
+          heading, a tinted band while editing. The two were previously one
+          undifferentiated wall of fields, which is why a filled line and an
+          empty one read the same. ------------------------------------- */}
       <section
-        className="border border-input rounded-lg p-3 mb-4"
+        className={
+          "border rounded-lg p-3 mb-4 " +
+          (editingIndex !== null
+            ? "border-primary bg-primary/5"
+            : "border-input")
+        }
         onKeyDown={(e) => {
           if (e.key === "Escape") {
-            setDraft({ ...emptyLine(), narration: draft.narration });
-            setDraftMsg(null);
+            if (editingIndex !== null) {
+              cancelEdit(); // put the line back exactly as it was
+            } else {
+              setDraft({ ...emptyLine(), narration: draft.narration });
+              setDraftMsg(null);
+            }
           }
         }}
       >
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-sm font-medium">
+            {editingIndex !== null ? (
+              <span className="text-primary">
+                Editing line {editingIndex + 1}
+              </span>
+            ) : lines.length > 0 ? (
+              <span className="text-muted-foreground">
+                New line {lines.length + 1}
+              </span>
+            ) : (
+              <span className="text-muted-foreground">First line</span>
+            )}
+          </div>
+          {editingIndex !== null && (
+            <button
+              className="text-sm border border-input rounded px-2 py-1"
+              onClick={cancelEdit}
+              title="Escape"
+            >
+              Cancel edit ⎋
+            </button>
+          )}
+        </div>
+
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-3">
           <div>
             <label className={labelCls}>Entity</label>
@@ -1308,11 +1458,16 @@ export default function VoucherEntry({
 
         <div className="flex items-center gap-3 mt-3">
           <button
-            className="border border-input rounded px-3 py-2 text-base bg-background hover:bg-accent"
+            className={
+              "rounded px-3 py-2 text-base " +
+              (editingIndex !== null
+                ? "bg-primary text-primary-foreground"
+                : "border border-input bg-background hover:bg-accent")
+            }
             onClick={commitDraft}
             title="Enter"
           >
-            Add line ⏎
+            {editingIndex !== null ? "Update line ⏎" : "Add line ⏎"}
           </button>
           {partyRequired && (
             <div className="w-56">
