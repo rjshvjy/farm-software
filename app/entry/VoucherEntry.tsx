@@ -318,6 +318,7 @@ function Combo({
   onFocus,
   onAddNew,
   inputRef,
+  disabled,
 }: {
   value: string;
   display: string; // label shown when not searching
@@ -327,6 +328,10 @@ function Combo({
   onFocus?: () => void;
   onAddNew?: (typed: string) => void;
   inputRef?: React.RefObject<HTMLInputElement | null>;
+  /** Locked: no typing, no list, no "+ Add". Used by the one-time toggle,
+   *  which must not leave a door open to creating a party at the same
+   *  moment the line declares it has no party. */
+  disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
@@ -344,7 +349,7 @@ function Combo({
   const exact = options.some(
     (o) => o.label.toLowerCase() === q || o.code.toLowerCase() === q,
   );
-  const showAdd = !!onAddNew && q.length > 0 && !exact;
+  const showAdd = !!onAddNew && !disabled && q.length > 0 && !exact;
   const rows = shown.length + (showAdd ? 1 : 0);
 
   function pick(i: number) {
@@ -363,10 +368,15 @@ function Combo({
     <div className="relative">
       <input
         ref={inputRef}
-        className={inputCls}
-        value={open ? text : display}
+        className={
+          inputCls +
+          (disabled ? " opacity-60 cursor-not-allowed bg-muted" : "")
+        }
+        disabled={disabled}
+        value={open && !disabled ? text : display}
         placeholder={placeholder}
         onFocus={() => {
+          if (disabled) return;
           setOpen(true);
           setText("");
           setHi(0);
@@ -394,7 +404,7 @@ function Combo({
           }
         }}
       />
-      {open && rows > 0 && (
+      {open && !disabled && rows > 0 && (
         <ul className="absolute z-50 mt-1 w-full max-h-72 overflow-auto rounded-md border border-input bg-background shadow-lg text-base">
           {shown.map((o, i) => (
             <li
@@ -1130,6 +1140,7 @@ export default function VoucherEntry({
       [...ps, { ...res.party }].sort((a, b) => a.name.localeCompare(b.name)),
     );
     setHeaderParty(res.party.party_code);
+    setOneTime(false); // naming a party is the opposite of a one-time payee
     setAddingParty(null);
     setTimeout(() => partyInputRef.current?.focus(), 0);
   }
@@ -1319,19 +1330,21 @@ export default function VoucherEntry({
               setOneTime(false);
               setArmed(false);
             }}
-            options={
-              oneTime
-                ? []
-                : parties.map((p) => ({
-                    code: p.party_code,
-                    label: p.name,
-                    sub: p.party_code,
-                  }))
+            options={parties.map((p) => ({
+              code: p.party_code,
+              label: p.name,
+              sub: p.party_code,
+            }))}
+            placeholder={
+              oneTime ? "one-time — untick to name a party" : "type name — pick, or add new…"
             }
-            placeholder="type name — pick, or add new…"
             onFocus={() => setFocusKey("party")}
-            onAddNew={openAddParty}
+            // No add-new path while the toggle is on: creating a party at the
+            // moment the line declares it has none is two contradictory
+            // answers to "who got the money".
+            onAddNew={oneTime ? undefined : openAddParty}
             inputRef={partyInputRef}
+            disabled={oneTime}
           />
           {/* The one-off escape hatch. A checkbox, NOT a list entry: a party
               row called One Time invites duplicates and a balance owed to
@@ -1358,6 +1371,10 @@ export default function VoucherEntry({
                 if (e.target.checked) {
                   setHeaderParty("");
                   setHeaderPayee("");
+                  // Abandon any half-typed new party: the two states are
+                  // mutually exclusive and the screen must say so.
+                  setAddingParty(null);
+                  setPartyErr(null);
                 }
                 setArmed(false);
                 setFocusKey("onetime");
@@ -1798,7 +1815,9 @@ export default function VoucherEntry({
                 label: p.name,
                 sub: p.party_code,
               }))}
-              placeholder={oneTime ? "one-time (header)" : "inherits header"}
+              placeholder={
+                oneTime ? "one-time — this line only" : "inherits header"
+              }
               onFocus={() => setFocusKey("lineparty")}
             />
           </div>
