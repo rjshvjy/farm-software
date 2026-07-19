@@ -22,9 +22,6 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import VoucherEntry, { type MasterRow, type PartyRow } from "./VoucherEntry";
 
-// Masters can change (masters admin); never serve a stale cached page.
-export const dynamic = "force-dynamic";
-
 export default async function EntryPage() {
   const supabase = await createClient();
 
