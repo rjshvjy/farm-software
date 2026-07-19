@@ -86,6 +86,16 @@ type Props = {
   vagueNarrationMin: number; // config VAGUE_NARRATION_MIN (15): vague heads
   sampleMode: boolean; // config LIVE_MODE === 'SAMPLE'
   initialCashBalance: number | null; // v_pocket_balances CASH at page load
+  oneTimeMax: number; // config ONE_TIME_MAX (file 09)
+  lineAmountWarn: number; // config LINE_AMOUNT_WARN (file 09)
+  partyWarnMult: number; // config PARTY_WARN_MULT (file 09)
+  // v_party_payment_stats: each party's own record, for the self-calibrating
+  // warning. Empty on day one — the warning simply stays silent until there
+  // is a pattern to compare against.
+  partyStats: Record<
+    string,
+    { times_paid: number; max_paid: number; avg_paid: number; last_paid: string }
+  >;
   userEmail: string;
 };
 
@@ -164,6 +174,44 @@ function bumpCode(base: string, taken: (code: string) => boolean): string {
     if (!taken(c)) return c;
   }
   return `${base} X`; // 99 same-named parties means a bigger problem
+}
+
+// ---------------------------------------------------------------------------
+// Amount in words, Indian system — the oldest anti-typo device in banking.
+// Misreading 40000 as 4000 is easy; misreading "forty thousand" as "four
+// thousand" is not. Whole rupees only: paise are not where digit errors live.
+// ---------------------------------------------------------------------------
+const ONES = [
+  "", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+  "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+  "seventeen", "eighteen", "nineteen",
+];
+const TENS = [
+  "", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy",
+  "eighty", "ninety",
+];
+
+function twoDigits(n: number): string {
+  if (n < 20) return ONES[n];
+  return (TENS[Math.floor(n / 10)] + " " + ONES[n % 10]).trim();
+}
+
+export function amountInWords(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "";
+  const w = Math.floor(Math.abs(n));
+  if (w === 0) return "";
+  const crore = Math.floor(w / 10000000);
+  const lakh = Math.floor((w % 10000000) / 100000);
+  const thousand = Math.floor((w % 100000) / 1000);
+  const hundred = Math.floor((w % 1000) / 100);
+  const rest = w % 100;
+  const parts: string[] = [];
+  if (crore) parts.push(twoDigits(crore) + " crore");
+  if (lakh) parts.push(twoDigits(lakh) + " lakh");
+  if (thousand) parts.push(twoDigits(thousand) + " thousand");
+  if (hundred) parts.push(ONES[hundred] + " hundred");
+  if (rest) parts.push(twoDigits(rest));
+  return parts.join(" ") + " rupees";
 }
 
 // ---------------------------------------------------------------------------
@@ -515,6 +563,10 @@ export default function VoucherEntry({
   vagueNarrationMin,
   sampleMode,
   initialCashBalance,
+  oneTimeMax,
+  lineAmountWarn,
+  partyWarnMult,
+  partyStats,
   userEmail,
 }: Props) {
   // ---- header: defaults for every line, set once per paper slip ----------
@@ -524,10 +576,18 @@ export default function VoucherEntry({
       masters["MODE"]?.[0]?.code ??
       "",
   );
+  // Vestigial after the 19-07 evening change: the free-text header payee is
+  // gone (payee = picked party, or ONE TIME). Kept as an always-empty
+  // fallback in eff() so old drafts do not break; remove in a later tidy.
   const [headerPayee, setHeaderPayee] = useState("");
   const [periodFromText, setPeriodFromText] = useState("");
   const [periodToText, setPeriodToText] = useState("");
   const [headerParty, setHeaderParty] = useState("");
+  // The one-time toggle (owner's design, 19-07): NOT a party row — a party
+  // record invites duplicates and a meaningless balance. A checked toggle
+  // sends the literal payee 'ONE TIME' with no party; the name goes in the
+  // narration, and file 09 enforces exactly that.
+  const [oneTime, setOneTime] = useState(false);
 
   // ---- lines: committed ones plus the one being edited --------------------
   const [lines, setLines] = useState<EditLine[]>([]);
@@ -676,14 +736,29 @@ export default function VoucherEntry({
   // Effective (post-inheritance) values for one line — the same resolution
   // the payload applies, reused by every preview check so they cannot drift
   // from what is actually sent.
-  const eff = (l: EditLine) => ({
-    payee: l.payee.trim() || headerPayee.trim(),
-    party: l.party_code || headerParty,
-    costNature: l.cost_nature,
-  });
+  // Effective values after inheritance and the one-time toggle. A line that
+  // names its own party overrides the toggle (a muster can pay Murugan the
+  // party and one stranger); otherwise a checked toggle means payee 'ONE
+  // TIME' and no party, exactly what file 09 expects.
+  const eff = (l: EditLine) => {
+    if (oneTime && !l.party_code) {
+      return { payee: "ONE TIME", party: "", costNature: l.cost_nature };
+    }
+    const party = l.party_code || headerParty;
+    const partyName = party
+      ? (partyByCode.get(party.toUpperCase())?.name ?? party)
+      : "";
+    return {
+      payee: l.payee.trim() || partyName || headerPayee.trim(),
+      party,
+      costNature: l.cost_nature,
+    };
+  };
 
-  const narrFloor = (activity: string) =>
-    vagueActivities.includes(activity) ? vagueNarrationMin : narrationMin;
+  const narrFloor = (activity: string, lineHasParty = false) =>
+    vagueActivities.includes(activity) || (oneTime && !lineHasParty)
+      ? vagueNarrationMin
+      : narrationMin;
 
   // A draft counts as a line the moment it is complete — she typed it, she
   // means it. "Complete" = what commitDraft would accept.
@@ -693,8 +768,8 @@ export default function VoucherEntry({
     if (!d.cost_object) p.push("cost object");
     if (!d.activity) p.push("activity");
     if (!(num(d.amount) !== null && num(d.amount)! > 0)) p.push("amount");
-    if (d.narration.trim().length < narrFloor(d.activity))
-      p.push(`narration (min ${narrFloor(d.activity)})`);
+    if (d.narration.trim().length < narrFloor(d.activity, !!d.party_code))
+      p.push(`narration (min ${narrFloor(d.activity, !!d.party_code)})`);
     return p;
   }
 
@@ -735,19 +810,26 @@ export default function VoucherEntry({
     );
   if (periodFromISO && periodToISO && periodToISO < periodFromISO)
     redMsgs.push("Period to is before period from. A period cannot run backwards.");
+  if (oneTime && modeKind === "CREDIT")
+    redMsgs.push(
+      "A one-time payee cannot be used on credit — there would be a debt owed to nobody. Name the party.",
+    );
 
   allLines.forEach((l, i) => {
     const n = i + 1;
     const e = eff(l);
-    const floor = narrFloor(l.activity);
+    const lineOneTime = e.payee === "ONE TIME";
+    const floor = narrFloor(l.activity, !!l.party_code);
     const narr = l.narration.trim();
 
     // -- red: the DB will refuse --
     if (narr.length < floor)
       redMsgs.push(
-        vagueActivities.includes(l.activity)
-          ? `Line ${n}: ${l.activity} is a last resort — say what it was actually for (min ${floor} characters).`
-          : `Line ${n}: narration needs at least ${floor} characters.`,
+        lineOneTime
+          ? `Line ${n}: a one-time payee needs the person named in the narration — who was paid, and for what (min ${floor} characters).`
+          : vagueActivities.includes(l.activity)
+            ? `Line ${n}: ${l.activity} is a last resort — say what it was actually for (min ${floor} characters).`
+            : `Line ${n}: narration needs at least ${floor} characters.`,
       );
     if (!e.costNature)
       redMsgs.push(
@@ -776,11 +858,42 @@ export default function VoucherEntry({
       );
     const md = num(l.mandays);
     const rt = num(l.rate);
+    const qt = num(l.qty);
     const amt = num(l.amount);
     if (md !== null && rt !== null && amt !== null && Math.abs(md * rt - amt) > 0.005)
       amberMsgs.push(
-        `Line ${n}: amount ₹ ${formatINR(amt)} ≠ mandays × rate ₹ ${formatINR(md * rt)}.`,
+        `Line ${n}: amount ₹ ${formatINR(amt)} ≠ labours × rate ₹ ${formatINR(md * rt)}.`,
       );
+    // file 09 mirror: piece-rate arithmetic — mandays blank, qty and rate present
+    if (md === null && qt !== null && rt !== null && amt !== null &&
+        Math.abs(qt * rt - amt) > 0.005)
+      amberMsgs.push(
+        `Line ${n}: amount ₹ ${formatINR(amt)} ≠ quantity × rate ₹ ${formatINR(qt * rt)}.`,
+      );
+    // file 09 mirror: one-time flag + threshold
+    if (lineOneTime) {
+      amberMsgs.push(`Line ${n}: one-time payee — will be flagged for the review queue.`);
+      if (amt !== null && amt > oneTimeMax)
+        amberMsgs.push(
+          `Line ${n}: ₹ ${formatINR(amt)} to a one-time payee (limit ₹ ${formatINR(oneTimeMax)}) — a payment this size probably deserves a named party.`,
+        );
+    }
+    // file 09 mirror: flat large-amount check — the extra-zero catcher
+    if (amt !== null && amt > lineAmountWarn)
+      amberMsgs.push(
+        `Line ${n}: ₹ ${formatINR(amt)} is unusually large — ${amountInWords(amt)}. Check the figure.`,
+      );
+    // file 09 mirror: the party's own payment pattern. Silent under 3
+    // payments — no pattern to compare against. Self-calibrating.
+    if (e.party && amt !== null) {
+      const st = partyStats[e.party];
+      if (st && st.times_paid >= 3 && amt > st.max_paid * partyWarnMult) {
+        const pname = partyByCode.get(e.party.toUpperCase())?.name ?? e.party;
+        amberMsgs.push(
+          `Line ${n}: ₹ ${formatINR(amt)} to ${pname} — their largest ever payment is ₹ ${formatINR(st.max_paid)} across ${st.times_paid} payments. Check the figure.`,
+        );
+      }
+    }
   });
 
   // Duplicate hint from THIS SITTING — free, no query; the DB runs the same
@@ -986,6 +1099,7 @@ export default function VoucherEntry({
       setAmountTouched(false);
       setHeaderPayee("");
       setHeaderParty("");
+      setOneTime(false);
       setPeriodFromText("");
       setPeriodToText("");
     }
@@ -1036,10 +1150,10 @@ export default function VoucherEntry({
   const FIELD_LABEL: Record<string, string> = {
     date: "Payment date",
     mode: "Mode",
-    payee: "Payee",
+    onetime: "One-time payee",
     pfrom: "Period from",
     pto: "Period to",
-    party: "Party",
+    party: "Payee / party",
     entity: "Entity",
     farm: "Farm",
     block: "Block",
@@ -1052,7 +1166,7 @@ export default function VoucherEntry({
     rate: "Rate",
     amount: "Amount",
     narration: "Narration",
-    linepayee: "Payee (this line)",
+
     lineparty: "Party (this line)",
     linecostnature: "Cost nature",
   };
@@ -1066,14 +1180,15 @@ export default function VoucherEntry({
           "How the money moved. Bank and credit modes need a party.";
         return modeRow?.notes ? `${base}  ·  ${mode}: ${modeRow.notes}` : base;
       }
-      case "payee":
-        return "Default payee for every line, as written on the slip. A line can override it.";
+
       case "pfrom":
         return "First day the work covers. Required — typed once here, every line inherits it.";
       case "pto":
         return "Last day the work covers. Required. Same-day work: same as period from.";
       case "party":
-        return "Type to search by name or code. If nothing matches, the last row of the list adds what you typed as a new party — you never leave the voucher.";
+        return "Type to search by name or code — the regulars are one keystroke. Nothing matches? The last row adds what you typed as a new party, without leaving the voucher. Someone you will never pay again? Tick one-time instead.";
+      case "onetime":
+        return `A person you will not pay again — the blade sharpener, the auto driver. Their NAME goes in the narration (${vagueNarrationMin}+ characters), the line is flagged for review, and above ₹ ${formatINR(oneTimeMax)} you will be nudged to name a real party. Not available on credit.`;
       case "entity":
         return "BUSINESS = the farms. PERSONAL = the household. FUNDING = owner money moving in or out.";
       case "farm":
@@ -1117,10 +1232,8 @@ export default function VoucherEntry({
         const floor = narrFloor(draft.activity);
         return `Say what the boxes cannot — which part of the block, why it was needed, the chemical and dose, anything unusual. At least ${floor} characters. Do not repeat the farm, crop or labour count: those are already recorded. Copies into the next line.`;
       }
-      case "linepayee":
-        return "Payee for this line only, when it differs from the header's.";
       case "lineparty":
-        return "Party for this line only, when it differs from the header's.";
+        return "This line's payee, when it differs from the header's — a muster paying Murugan and Selvi is one voucher, two lines, two parties. Overrides the one-time toggle for this line.";
       case "linecostnature": {
         const cn = (masters["COST_NATURE"] ?? []).find(
           (c) => c.code === draft.cost_nature,
@@ -1188,17 +1301,70 @@ export default function VoucherEntry({
           />
         </div>
         <div>
-          <label className={labelCls}>Payee (all lines)</label>
-          <input
-            className={inputCls}
-            value={headerPayee}
-            onChange={(e) => {
-              setHeaderPayee(e.target.value);
+          <label className={labelCls}>
+            Payee / party{partyRequired ? " (required)" : ""}
+          </label>
+          <Combo
+            value={headerParty}
+            display={
+              oneTime
+                ? "— one-time payee —"
+                : headerParty
+                  ? (partyByCode.get(headerParty.toUpperCase())?.name ??
+                    headerParty)
+                  : ""
+            }
+            onChange={(v) => {
+              setHeaderParty(v);
+              setOneTime(false);
               setArmed(false);
             }}
-            onFocus={() => setFocusKey("payee")}
-            placeholder="as written on the slip"
+            options={
+              oneTime
+                ? []
+                : parties.map((p) => ({
+                    code: p.party_code,
+                    label: p.name,
+                    sub: p.party_code,
+                  }))
+            }
+            placeholder="type name — pick, or add new…"
+            onFocus={() => setFocusKey("party")}
+            onAddNew={openAddParty}
+            inputRef={partyInputRef}
           />
+          {/* The one-off escape hatch. A checkbox, NOT a list entry: a party
+              row called One Time invites duplicates and a balance owed to
+              nobody. Unavailable on credit — you cannot owe money to nobody. */}
+          <label
+            className={
+              "flex items-center gap-1.5 mt-1 text-sm " +
+              (modeKind === "CREDIT"
+                ? "text-muted-foreground/50 cursor-not-allowed"
+                : "text-muted-foreground cursor-pointer")
+            }
+            title={
+              modeKind === "CREDIT"
+                ? "Not on credit — a debt cannot be owed to nobody"
+                : "A person you will not pay again. Their name goes in the narration."
+            }
+          >
+            <input
+              type="checkbox"
+              checked={oneTime}
+              disabled={modeKind === "CREDIT"}
+              onChange={(e) => {
+                setOneTime(e.target.checked);
+                if (e.target.checked) {
+                  setHeaderParty("");
+                  setHeaderPayee("");
+                }
+                setArmed(false);
+                setFocusKey("onetime");
+              }}
+            />
+            One-time payee
+          </label>
         </div>
         <div>
           <label className={labelCls}>Period from (required)</label>
@@ -1228,35 +1394,6 @@ export default function VoucherEntry({
           />
           {dateEcho(periodToText, periodToISO)}
         </div>
-        {partyRequired && (
-          <div>
-            <label className={labelCls}>
-              Party ({modeKind === "BANK" ? "bank — required" : "credit — required"})
-            </label>
-            <Combo
-              value={headerParty}
-              display={
-                headerParty
-                  ? partyByCode.get(headerParty.toUpperCase())?.name ??
-                    headerParty
-                  : ""
-              }
-              onChange={(v) => {
-                setHeaderParty(v);
-                setArmed(false);
-              }}
-              options={parties.map((p) => ({
-                code: p.party_code,
-                label: p.name,
-                sub: p.party_code,
-              }))}
-              placeholder="type name or code…"
-              onFocus={() => setFocusKey("party")}
-              onAddNew={openAddParty}
-              inputRef={partyInputRef}
-            />
-          </div>
-        )}
       </section>
 
       {addingParty && (
@@ -1608,6 +1745,12 @@ export default function VoucherEntry({
           <div>
             <label className={labelCls}>
               Amount ₹
+              {oneTime && !draft.party_code && (
+                <span className="text-amber-600 dark:text-amber-400">
+                  {" "}
+                  (max ₹ {formatINR(oneTimeMax)} for one-time)
+                </span>
+              )}
               {!amountTouched && impliedAmount(draft) !== null && (
                 <span className="text-muted-foreground"> (calculated)</span>
               )}
@@ -1624,6 +1767,11 @@ export default function VoucherEntry({
             />
           </div>
           <BandHint>
+            {num(draft.amount) !== null && num(draft.amount)! > 0 ? (
+              <strong className="text-foreground">
+                ₹ {formatINR(num(draft.amount)!)} — {amountInWords(num(draft.amount)!)}.
+              </strong>
+            ) : null}{" "}
             {rateBasis(draft) === "MANDAY"
               ? "Half days are fine — 6.5 labours. Amount fills itself; overtype if the slip differs."
               : rateBasis(draft) === "UNIT" && draft.unit
@@ -1635,13 +1783,23 @@ export default function VoucherEntry({
         {/* -------- WHO AND WHY -------- */}
         <FieldBand title="Who and why">
           <div className="md:col-span-2">
-            <label className={labelCls}>Payee (this line)</label>
-            <input
-              className={inputCls}
-              value={draft.payee}
-              onChange={(e) => setD("payee", e.target.value)}
-              onFocus={() => setFocusKey("linepayee")}
-              placeholder={headerPayee || "inherits header"}
+            <label className={labelCls}>Payee / party (this line)</label>
+            <Combo
+              value={draft.party_code}
+              display={
+                draft.party_code
+                  ? (partyByCode.get(draft.party_code.toUpperCase())?.name ??
+                    draft.party_code)
+                  : ""
+              }
+              onChange={(v) => setD("party_code", v)}
+              options={parties.map((p) => ({
+                code: p.party_code,
+                label: p.name,
+                sub: p.party_code,
+              }))}
+              placeholder={oneTime ? "one-time (header)" : "inherits header"}
+              onFocus={() => setFocusKey("lineparty")}
             />
           </div>
           <div className="md:col-span-4">
@@ -1670,7 +1828,11 @@ export default function VoucherEntry({
               onKeyDown={(e) => {
                 if (e.key === "Enter") commitDraft();
               }}
-              placeholder="say what the boxes above cannot"
+              placeholder={
+                oneTime && !draft.party_code
+                  ? "name the person and what they did"
+                  : "say what the boxes above cannot"
+              }
             />
             {/* What the columns already hold. Stops the narration repeating
                 the farm, crop and labour count — which is most of what the
@@ -1702,27 +1864,7 @@ export default function VoucherEntry({
           >
             {editingIndex !== null ? "Update line ⏎" : "Add line ⏎"}
           </button>
-          {partyRequired && (
-            <div className="w-56">
-              <Combo
-                value={draft.party_code}
-                display={
-                  draft.party_code
-                    ? partyByCode.get(draft.party_code.toUpperCase())?.name ??
-                      draft.party_code
-                    : ""
-                }
-                onChange={(v) => setD("party_code", v)}
-                options={parties.map((p) => ({
-                  code: p.party_code,
-                  label: p.name,
-                  sub: p.party_code,
-                }))}
-                placeholder="party (this line) — inherits header"
-                onFocus={() => setFocusKey("lineparty")}
-              />
-            </div>
-          )}
+
           {draftMsg && (
             <span className="text-base text-red-600 dark:text-red-400">
               {draftMsg}
@@ -1805,6 +1947,9 @@ export default function VoucherEntry({
         <span className="text-base text-muted-foreground tabular-nums">
           {allLines.length} line{allLines.length === 1 ? "" : "s"} · total ₹{" "}
           {formatINR(linesTotal)}
+          {linesTotal > 0 && (
+            <span className="text-sm"> — {amountInWords(linesTotal)}</span>
+          )}
         </span>
       </section>
 
