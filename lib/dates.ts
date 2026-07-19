@@ -7,7 +7,19 @@
 // This file is the ONLY place the user-facing format lives. No screen formats
 // or parses a date by hand; if the format ever changes, it changes here.
 //
-// No date library. Thirty lines of our own beats a dependency to pin.
+// No date library. Fifty lines of our own beats a dependency to pin.
+//
+// SHORTHAND (added for the entry screen's ergonomics, handover §8):
+//   "19"      → the 19th of the current month
+//   "19/6"    → 19 June of the current year        (also 19-6, 19.6)
+//   "1907"    → 19 July of the current year        (bare ddmm, same family
+//                                                   as the existing bare
+//                                                   ddmmyy / ddmmyyyy)
+// "Current" means the ESTATE's today (fn_today, file 07) — the caller passes
+// it in. If the caller does not pass a today, shorthand is simply not
+// recognised and full dates parse exactly as before. This keeps the function
+// honest: it never reads the browser clock, which §4 forbids as a basis for
+// any date judgement.
 // ---------------------------------------------------------------------------
 
 /** ISO yyyy-mm-dd → DD/MM/YYYY for display. Empty in, empty out. */
@@ -27,25 +39,53 @@ export function formatDMY(iso: string | null | undefined): string {
  *   18072026     (bare 8 digits)
  *   180726       (bare 6 digits)
  *
- * Rejects anything else, including real-but-impossible dates (31/02/2026).
- * Never guesses month-first: 07/18/2026 is simply not a date here.
+ * And, ONLY when todayISO is supplied (the estate's date from fn_today):
+ *   18           (day of the current month)
+ *   18/7  18-7  18.7   (day and month, current year)
+ *   1807         (bare 4 digits: day + month, current year)
+ *
+ * Rejects anything else, including real-but-impossible dates (31/02/2026,
+ * or "31" typed in June). Never guesses month-first: 07/18/2026 is simply
+ * not a date here.
  */
-export function parseDMY(text: string): string | null {
+export function parseDMY(text: string, todayISO?: string): string | null {
   const t = text.trim();
   if (!t) return null;
 
+  // The estate's current day/month/year, if the caller gave us one.
+  // Parsed by hand, not via Date, so no timezone can touch it.
+  let curY: number | null = null;
+  let curM: number | null = null;
+  if (todayISO) {
+    const tm = /^(\d{4})-(\d{2})-(\d{2})/.exec(todayISO);
+    if (tm) {
+      curY = +tm[1];
+      curM = +tm[2];
+    }
+  }
+
   let d: number, mo: number, y: number;
 
-  const sep = /^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2}|\d{4})$/.exec(t);
+  const sep3 = /^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2}|\d{4})$/.exec(t);
   const bare8 = /^(\d{2})(\d{2})(\d{4})$/.exec(t);
   const bare6 = /^(\d{2})(\d{2})(\d{2})$/.exec(t);
+  // shorthand forms — only meaningful with a today to resolve against
+  const sep2 = /^(\d{1,2})[\/\-.](\d{1,2})$/.exec(t); // 18/7
+  const bare4 = /^(\d{2})(\d{2})$/.exec(t);           // 1807
+  const dayOnly = /^(\d{1,2})$/.exec(t);              // 18
 
-  if (sep) {
-    d = +sep[1]; mo = +sep[2]; y = +sep[3];
+  if (sep3) {
+    d = +sep3[1]; mo = +sep3[2]; y = +sep3[3];
   } else if (bare8) {
     d = +bare8[1]; mo = +bare8[2]; y = +bare8[3];
   } else if (bare6) {
     d = +bare6[1]; mo = +bare6[2]; y = +bare6[3];
+  } else if (sep2 && curY !== null) {
+    d = +sep2[1]; mo = +sep2[2]; y = curY;
+  } else if (bare4 && curY !== null) {
+    d = +bare4[1]; mo = +bare4[2]; y = curY;
+  } else if (dayOnly && curY !== null && curM !== null) {
+    d = +dayOnly[1]; mo = curM; y = curY;
   } else {
     return null;
   }
