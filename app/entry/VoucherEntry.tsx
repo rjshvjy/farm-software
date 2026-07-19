@@ -52,7 +52,7 @@
 // ---------------------------------------------------------------------------
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import { formatDMY, parseDMY, formatINR } from "@/lib/dates";
 import {
   saveVoucher,
@@ -164,6 +164,341 @@ function bumpCode(base: string, taken: (code: string) => boolean): string {
     if (!taken(c)) return c;
   }
   return `${base} X`; // 99 same-named parties means a bigger problem
+}
+
+// ---------------------------------------------------------------------------
+// SHARED STYLES + SMALL COMPONENTS — module level, deliberately.
+//
+// These were originally defined INSIDE VoucherEntry. That is the bug the
+// 19-07 evening test found: every keystroke re-renders VoucherEntry, which
+// re-CREATES any component defined inside it; React sees a new component
+// type, unmounts the old field and mounts a fresh one, and the cursor falls
+// out after every character. Hoisted here, their identity is stable across
+// renders and focus survives typing. Rule for this file: no component
+// definitions inside VoucherEntry, ever.
+// ---------------------------------------------------------------------------
+
+// One step up from the original xs/sm scale — the labels were unreadable at
+// a desk. Inputs at text-base, labels at text-sm.
+const inputCls =
+  "border border-input bg-background rounded px-2 py-1.5 text-base w-full " +
+  "focus:outline-none focus:ring-2 focus:ring-ring";
+const labelCls = "block text-sm text-muted-foreground mb-1";
+const numCls = inputCls + " text-right tabular-nums";
+
+/**
+ * One labelled band of the line. The heading is the QUESTION the fields
+ * answer — Where, What work, On what, How much, Who and why. A shaded
+ * heading strip over a bordered body makes the five bands read as five
+ * sections at a glance; items-end keeps every input box on one baseline
+ * even where a label wraps to two lines.
+ */
+function FieldBand({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="mb-4 rounded-lg overflow-hidden border border-input">
+      <div className="bg-muted px-3 py-1.5 text-sm font-semibold tracking-wide text-muted-foreground uppercase">
+        {title}
+      </div>
+      <div className="p-3 grid grid-cols-2 md:grid-cols-6 gap-3 items-end bg-background">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** Full-width hint line inside a band — spans the grid, never breaks
+ *  the column rhythm the way an inline flex span did. */
+function BandHint({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="col-span-2 md:col-span-6 text-sm text-muted-foreground -mt-1">
+      {children}
+    </div>
+  );
+}
+
+function Sel({
+  value,
+  onChange,
+  options,
+  allowBlank,
+  onFocus,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  options: { code: string; label: string }[];
+  allowBlank?: boolean;
+  onFocus?: () => void;
+}) {
+  return (
+    <select
+      className={inputCls}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      onFocus={onFocus}
+    >
+      {allowBlank && <option value="">—</option>}
+      {options.map((o) => (
+        <option key={o.code} value={o.code}>
+          {o.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Combo — one type-ahead for every long list. Substring match on code and
+// label; arrows + Enter select; Esc closes. When `onAddNew` is given and the
+// typed text matches nothing exactly, the last row offers to add it — the
+// party picker's inline-add path.
+// ---------------------------------------------------------------------------
+function Combo({
+  value,
+  display,
+  onChange,
+  options,
+  placeholder,
+  onFocus,
+  onAddNew,
+  inputRef,
+}: {
+  value: string;
+  display: string; // label shown when not searching
+  onChange: (code: string) => void;
+  options: { code: string; label: string; sub?: string }[];
+  placeholder?: string;
+  onFocus?: () => void;
+  onAddNew?: (typed: string) => void;
+  inputRef?: React.RefObject<HTMLInputElement | null>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const [hi, setHi] = useState(0);
+
+  const q = text.trim().toLowerCase();
+  const matches = q
+    ? options.filter(
+        (o) =>
+          o.code.toLowerCase().includes(q) ||
+          o.label.toLowerCase().includes(q),
+      )
+    : options;
+  const shown = matches.slice(0, 12);
+  const exact = options.some(
+    (o) => o.label.toLowerCase() === q || o.code.toLowerCase() === q,
+  );
+  const showAdd = !!onAddNew && q.length > 0 && !exact;
+  const rows = shown.length + (showAdd ? 1 : 0);
+
+  function pick(i: number) {
+    if (i < shown.length) {
+      onChange(shown[i].code);
+      setText("");
+      setOpen(false);
+    } else if (showAdd) {
+      setOpen(false);
+      onAddNew!(text.trim());
+      setText("");
+    }
+  }
+
+  return (
+    <div className="relative">
+      <input
+        ref={inputRef}
+        className={inputCls}
+        value={open ? text : display}
+        placeholder={placeholder}
+        onFocus={() => {
+          setOpen(true);
+          setText("");
+          setHi(0);
+          onFocus?.();
+        }}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        onChange={(e) => {
+          setText(e.target.value);
+          setHi(0);
+          if (!open) setOpen(true);
+        }}
+        onKeyDown={(e) => {
+          if (!open) return;
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            setHi((h) => Math.min(h + 1, rows - 1));
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            setHi((h) => Math.max(h - 1, 0));
+          } else if (e.key === "Enter") {
+            e.preventDefault();
+            if (rows > 0) pick(hi);
+          } else if (e.key === "Escape") {
+            setOpen(false);
+          }
+        }}
+      />
+      {open && rows > 0 && (
+        <ul className="absolute z-20 mt-1 w-full max-h-72 overflow-auto rounded border border-input bg-background shadow-md text-base">
+          {shown.map((o, i) => (
+            <li
+              key={o.code}
+              className={
+                "px-2 py-1 cursor-pointer " +
+                (i === hi ? "bg-accent text-accent-foreground" : "")
+              }
+              onMouseDown={(e) => {
+                e.preventDefault();
+                pick(i);
+              }}
+              onMouseEnter={() => setHi(i)}
+            >
+              {o.label}
+              {o.sub && (
+                <span className="text-muted-foreground"> · {o.sub}</span>
+              )}
+            </li>
+          ))}
+          {showAdd && (
+            <li
+              className={
+                "px-2 py-1 cursor-pointer border-t border-input " +
+                (hi === shown.length
+                  ? "bg-accent text-accent-foreground"
+                  : "text-muted-foreground")
+              }
+              onMouseDown={(e) => {
+                e.preventDefault();
+                pick(shown.length);
+              }}
+              onMouseEnter={() => setHi(shown.length)}
+            >
+              + Add “{text.trim()}” as a new party
+            </li>
+          )}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// AddPartyPanel — inline, not a modal, not a page. Name prefilled from what
+// she typed; code derived and collision-checked live against the loaded list
+// (fn_party_upsert overwrites on collision by design — the screen owns this
+// question). On a clash: use the existing party, or take the auto-bumped
+// code. Mobile optional (decision C3). Parent state arrives as props so this
+// component can live at module level and keep focus while typing.
+// ---------------------------------------------------------------------------
+function AddPartyPanel({
+  typed,
+  partyByCode,
+  busy,
+  err,
+  onSave,
+  onUseExisting,
+  onCancel,
+}: {
+  typed: string;
+  partyByCode: Map<string, PartyRow>;
+  busy: boolean;
+  err: string | null;
+  onSave: (code: string, name: string, kind: PartyKind, mobile: string) => void;
+  onUseExisting: (code: string) => void;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState(typed);
+  const [code, setCode] = useState(deriveCode(typed));
+  const [kind, setKind] = useState<PartyKind>("SUPPLIER");
+  const [mobile, setMobile] = useState("");
+
+  const clash = partyByCode.get(code.trim().toUpperCase()) ?? null;
+  const codeOk = code.trim().length > 0 && !clash;
+  const bumped = bumpCode(deriveCode(name), (c) =>
+    partyByCode.has(c.toUpperCase()),
+  );
+
+  return (
+    <div className="border border-input rounded-lg p-3 bg-muted/50 mt-2 mb-4 text-base">
+      <div className="font-medium mb-2">New party</div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 items-end">
+        <div>
+          <label className={labelCls}>Name</label>
+          <input
+            className={inputCls}
+            value={name}
+            autoFocus
+            onChange={(e) => {
+              setName(e.target.value);
+              setCode(deriveCode(e.target.value));
+            }}
+          />
+        </div>
+        <div>
+          <label className={labelCls}>Code (stable, never renamed)</label>
+          <input
+            className={inputCls + (clash ? " border-red-500" : "")}
+            value={code}
+            onChange={(e) => setCode(e.target.value.toUpperCase())}
+          />
+        </div>
+        <div>
+          <label className={labelCls}>Kind</label>
+          <select
+            className={inputCls}
+            value={kind}
+            onChange={(e) => setKind(e.target.value as PartyKind)}
+          >
+            <option value="SUPPLIER">SUPPLIER</option>
+            <option value="CUSTOMER">CUSTOMER</option>
+            <option value="BOTH">BOTH</option>
+          </select>
+        </div>
+        <div>
+          <label className={labelCls}>Mobile (optional)</label>
+          <input
+            className={inputCls}
+            value={mobile}
+            onChange={(e) => setMobile(e.target.value)}
+          />
+        </div>
+      </div>
+
+      {clash && (
+        <div className="mt-2 text-amber-700 dark:text-amber-400">
+          Code <strong>{clash.party_code}</strong> already belongs to “
+          {clash.name}”.{" "}
+          <button className="underline" onClick={() => onUseExisting(clash.party_code)}>
+            Use the existing party
+          </button>{" "}
+          ·{" "}
+          <button className="underline" onClick={() => setCode(bumped)}>
+            Create new as “{bumped}”
+          </button>
+        </div>
+      )}
+
+      {err && <div className="mt-2 text-red-700 dark:text-red-400">{err}</div>}
+
+      <div className="mt-3 flex gap-2">
+        <button
+          className="bg-primary text-primary-foreground rounded px-3 py-1.5 disabled:opacity-50"
+          disabled={!codeOk || !name.trim() || busy}
+          onClick={() => onSave(code.trim(), name.trim(), kind, mobile)}
+        >
+          {busy ? "Saving…" : "Save party"}
+        </button>
+        <button className="border border-input rounded px-3 py-1.5" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -796,326 +1131,6 @@ export default function VoucherEntry({
     }
   }
 
-  // ---- styling helpers (tokens, not colours: dark mode + the future shell) --
-
-  // One step up from the original xs/sm scale — the labels were unreadable
-  // at a desk. Inputs at text-base, labels at text-sm, with a touch more
-  // vertical padding so the taller text is not cramped.
-  const inputCls =
-    "border border-input bg-background rounded px-2 py-1.5 text-base w-full " +
-    "focus:outline-none focus:ring-2 focus:ring-ring";
-  const labelCls = "block text-sm text-muted-foreground mb-1";
-  const numCls = inputCls + " text-right tabular-nums";
-
-  /**
-   * One labelled band of the line. The heading is the QUESTION the fields
-   * answer — Where, What work, On what, How much, Who and why. Naming the
-   * question is the whole point: it turns nine identical dropdowns into
-   * five small decisions, and it tells the accountant which of them are
-   * the MIS tags rather than the measurements.
-   */
-  function FieldBand({
-    title,
-    children,
-  }: {
-    title: string;
-    children: React.ReactNode;
-  }) {
-    return (
-      <div className="mb-3">
-        <div className="text-sm font-medium text-muted-foreground mb-1.5 border-b border-input pb-1">
-          {title}
-        </div>
-        <div className="grid grid-cols-2 md:grid-cols-6 gap-3">{children}</div>
-      </div>
-    );
-  }
-
-  function Sel({
-    value,
-    onChange,
-    options,
-    allowBlank,
-    onFocus,
-  }: {
-    value: string;
-    onChange: (v: string) => void;
-    options: { code: string; label: string }[];
-    allowBlank?: boolean;
-    onFocus?: () => void;
-  }) {
-    return (
-      <select
-        className={inputCls}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onFocus={onFocus}
-      >
-        {allowBlank && <option value="">—</option>}
-        {options.map((o) => (
-          <option key={o.code} value={o.code}>
-            {o.label}
-          </option>
-        ))}
-      </select>
-    );
-  }
-
-  // ------------------------------------------------------------------------
-  // Combo — one type-ahead for every long list. Substring match on code and
-  // label; arrows + Enter select; Esc closes. When `onAddNew` is given and
-  // the typed text matches nothing exactly, the last row offers to add it —
-  // the party picker's inline-add path.
-  // ------------------------------------------------------------------------
-  function Combo({
-    value,
-    display,
-    onChange,
-    options,
-    placeholder,
-    onFocus,
-    onAddNew,
-    inputRef,
-  }: {
-    value: string;
-    display: string; // label shown when not searching
-    onChange: (code: string) => void;
-    options: { code: string; label: string; sub?: string }[];
-    placeholder?: string;
-    onFocus?: () => void;
-    onAddNew?: (typed: string) => void;
-    inputRef?: React.RefObject<HTMLInputElement | null>;
-  }) {
-    const [open, setOpen] = useState(false);
-    const [text, setText] = useState("");
-    const [hi, setHi] = useState(0);
-
-    const q = text.trim().toLowerCase();
-    const matches = q
-      ? options.filter(
-          (o) =>
-            o.code.toLowerCase().includes(q) ||
-            o.label.toLowerCase().includes(q),
-        )
-      : options;
-    const shown = matches.slice(0, 12);
-    const exact = options.some(
-      (o) => o.label.toLowerCase() === q || o.code.toLowerCase() === q,
-    );
-    const showAdd = !!onAddNew && q.length > 0 && !exact;
-    const rows = shown.length + (showAdd ? 1 : 0);
-
-    function pick(i: number) {
-      if (i < shown.length) {
-        onChange(shown[i].code);
-        setText("");
-        setOpen(false);
-      } else if (showAdd) {
-        setOpen(false);
-        onAddNew!(text.trim());
-        setText("");
-      }
-    }
-
-    return (
-      <div className="relative">
-        <input
-          ref={inputRef}
-          className={inputCls}
-          value={open ? text : display}
-          placeholder={placeholder}
-          onFocus={() => {
-            setOpen(true);
-            setText("");
-            setHi(0);
-            onFocus?.();
-          }}
-          onBlur={() => setTimeout(() => setOpen(false), 150)}
-          onChange={(e) => {
-            setText(e.target.value);
-            setHi(0);
-            if (!open) setOpen(true);
-          }}
-          onKeyDown={(e) => {
-            if (!open) return;
-            if (e.key === "ArrowDown") {
-              e.preventDefault();
-              setHi((h) => Math.min(h + 1, rows - 1));
-            } else if (e.key === "ArrowUp") {
-              e.preventDefault();
-              setHi((h) => Math.max(h - 1, 0));
-            } else if (e.key === "Enter") {
-              e.preventDefault();
-              if (rows > 0) pick(hi);
-            } else if (e.key === "Escape") {
-              setOpen(false);
-            }
-          }}
-        />
-        {open && rows > 0 && (
-          <ul className="absolute z-20 mt-1 w-full max-h-72 overflow-auto rounded border border-input bg-background shadow-md text-base">
-            {shown.map((o, i) => (
-              <li
-                key={o.code}
-                className={
-                  "px-2 py-1 cursor-pointer " +
-                  (i === hi ? "bg-accent text-accent-foreground" : "")
-                }
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  pick(i);
-                }}
-                onMouseEnter={() => setHi(i)}
-              >
-                {o.label}
-                {o.sub && (
-                  <span className="text-muted-foreground"> · {o.sub}</span>
-                )}
-              </li>
-            ))}
-            {showAdd && (
-              <li
-                className={
-                  "px-2 py-1 cursor-pointer border-t border-input " +
-                  (hi === shown.length
-                    ? "bg-accent text-accent-foreground"
-                    : "text-muted-foreground")
-                }
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  pick(shown.length);
-                }}
-                onMouseEnter={() => setHi(shown.length)}
-              >
-                + Add “{text.trim()}” as a new party
-              </li>
-            )}
-          </ul>
-        )}
-      </div>
-    );
-  }
-
-  // ------------------------------------------------------------------------
-  // AddPartyPanel — inline, not a modal, not a page. Name prefilled from
-  // what she typed; code derived and collision-checked live against the
-  // loaded list (fn_party_upsert overwrites on collision by design — the
-  // screen owns this question). On a clash: use the existing party, or take
-  // the auto-bumped code. Mobile optional (decision C3).
-  // ------------------------------------------------------------------------
-  function AddPartyPanel({ typed }: { typed: string }) {
-    const [name, setName] = useState(typed);
-    const [code, setCode] = useState(deriveCode(typed));
-    const [kind, setKind] = useState<PartyKind>("SUPPLIER");
-    const [mobile, setMobile] = useState("");
-
-    const clash = partyByCode.get(code.trim().toUpperCase()) ?? null;
-    const codeOk = code.trim().length > 0 && !clash;
-
-    return (
-      <div className="border border-input rounded-lg p-3 bg-muted/50 mt-2 text-base">
-        <div className="font-medium mb-2">New party</div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <div>
-            <label className={labelCls}>Name</label>
-            <input
-              className={inputCls}
-              value={name}
-              autoFocus
-              onChange={(e) => {
-                setName(e.target.value);
-                setCode(deriveCode(e.target.value));
-              }}
-            />
-          </div>
-          <div>
-            <label className={labelCls}>Code (stable, never renamed)</label>
-            <input
-              className={inputCls + (clash ? " border-red-500" : "")}
-              value={code}
-              onChange={(e) => setCode(e.target.value.toUpperCase())}
-            />
-          </div>
-          <div>
-            <label className={labelCls}>Kind</label>
-            <select
-              className={inputCls}
-              value={kind}
-              onChange={(e) => setKind(e.target.value as PartyKind)}
-            >
-              <option value="SUPPLIER">SUPPLIER</option>
-              <option value="CUSTOMER">CUSTOMER</option>
-              <option value="BOTH">BOTH</option>
-            </select>
-          </div>
-          <div>
-            <label className={labelCls}>Mobile (optional)</label>
-            <input
-              className={inputCls}
-              value={mobile}
-              onChange={(e) => setMobile(e.target.value)}
-            />
-          </div>
-        </div>
-
-        {clash && (
-          <div className="mt-2 text-amber-700 dark:text-amber-400">
-            Code <strong>{clash.party_code}</strong> already belongs to “
-            {clash.name}”.{" "}
-            <button
-              className="underline"
-              onClick={() => {
-                setHeaderParty(clash.party_code);
-                setAddingParty(null);
-                setTimeout(() => partyInputRef.current?.focus(), 0);
-              }}
-            >
-              Use the existing party
-            </button>{" "}
-            ·{" "}
-            <button
-              className="underline"
-              onClick={() =>
-                setCode(
-                  bumpCode(deriveCode(name), (c) =>
-                    partyByCode.has(c.toUpperCase()),
-                  ),
-                )
-              }
-            >
-              Create new as “
-              {bumpCode(deriveCode(name), (c) => partyByCode.has(c.toUpperCase()))}
-              ”
-            </button>
-          </div>
-        )}
-
-        {partyErr && (
-          <div className="mt-2 text-red-700 dark:text-red-400">{partyErr}</div>
-        )}
-
-        <div className="mt-3 flex gap-2">
-          <button
-            className="bg-primary text-primary-foreground rounded px-3 py-1.5 disabled:opacity-50"
-            disabled={!codeOk || !name.trim() || partyBusy}
-            onClick={() => submitAddParty(code.trim(), name.trim(), kind, mobile)}
-          >
-            {partyBusy ? "Saving…" : "Save party"}
-          </button>
-          <button
-            className="border border-input rounded px-3 py-1.5"
-            onClick={() => {
-              setAddingParty(null);
-              setPartyErr(null);
-            }}
-          >
-            Cancel
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   // ---- render -------------------------------------------------------------
 
   const dateEcho = (text: string, iso: string | null) => (
@@ -1241,7 +1256,24 @@ export default function VoucherEntry({
         )}
       </section>
 
-      {addingParty && <AddPartyPanel typed={addingParty.typed} />}
+      {addingParty && (
+        <AddPartyPanel
+          typed={addingParty.typed}
+          partyByCode={partyByCode}
+          busy={partyBusy}
+          err={partyErr}
+          onSave={submitAddParty}
+          onUseExisting={(code) => {
+            setHeaderParty(code);
+            setAddingParty(null);
+            setTimeout(() => partyInputRef.current?.focus(), 0);
+          }}
+          onCancel={() => {
+            setAddingParty(null);
+            setPartyErr(null);
+          }}
+        />
+      )}
 
       {/* ---------------- lines already added to this voucher --------------
           Its own bordered card, clearly a DIFFERENT object from the editor
@@ -1514,13 +1546,13 @@ export default function VoucherEntry({
               onFocus={() => setFocusKey("costobject")}
             />
           </div>
-          <div>
+          <div className="md:col-span-2">
             <label className={labelCls}>
               How much covered
               {activityByCode.get(draft.activity)?.required_unit && (
                 <span className="text-amber-600 dark:text-amber-400">
                   {" "}
-                  (needed)
+                  (saves blank, but flagged)
                 </span>
               )}
             </label>
@@ -1541,11 +1573,10 @@ export default function VoucherEntry({
               onFocus={() => setFocusKey("unit")}
             />
           </div>
-          <div className="md:col-span-2 flex items-end">
-            <span className="text-sm text-muted-foreground">
-              acres, trees, feet — whatever the standard is measured in
-            </span>
-          </div>
+          <BandHint>
+            acres, trees, feet — whatever the standard for this work is
+            measured in
+          </BandHint>
         </FieldBand>
 
         {/* -------- HOW MUCH -------- */}
@@ -1589,15 +1620,13 @@ export default function VoucherEntry({
               }}
             />
           </div>
-          <div className="md:col-span-3 flex items-end">
-            <span className="text-sm text-muted-foreground">
-              {rateBasis(draft) === "MANDAY"
-                ? "Half days are fine — 6.5 labours."
-                : rateBasis(draft) === "UNIT" && draft.unit
-                  ? `Piece work: ₹ per ${draft.unit} × how much covered.`
-                  : "Day wage: fill labours. Piece work: fill how much covered."}
-            </span>
-          </div>
+          <BandHint>
+            {rateBasis(draft) === "MANDAY"
+              ? "Half days are fine — 6.5 labours. Amount fills itself; overtype if the slip differs."
+              : rateBasis(draft) === "UNIT" && draft.unit
+                ? `Piece work: ₹ per ${draft.unit} × how much covered. Amount fills itself.`
+                : "Day wage: fill labours. Piece work: leave labours blank and fill how much covered."}
+          </BandHint>
         </FieldBand>
 
         {/* -------- WHO AND WHY -------- */}
