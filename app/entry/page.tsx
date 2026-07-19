@@ -2,9 +2,9 @@
 // ---------------------------------------------------------------------------
 // FARM & HOME ACCOUNTS — voucher entry, server side.
 //
-// This is a server component. It does four things, once per page load, and
-// hands everything to the client screen as props so no dropdown ever waits on
-// the network mid-typing:
+// This is a server component. It loads everything the screen needs, once per
+// page load, and hands it to the client screen as props so no dropdown ever
+// waits on the network mid-typing:
 //
 //   1. Confirms the session (the proxy already guards the route; this is the
 //      second lock on the same door).
@@ -17,12 +17,38 @@
 //      and must not hardcode which activities count as vague (§1.8).
 //
 // Nothing here writes. The one write path is actions.ts.
+//
+// -- WHY THE <Suspense> WRAPPER ---------------------------------------------
+// This project runs Next 16 with Cache Components enabled (next.config.ts).
+// Under that setting, uncached data access — every query below — MUST sit
+// inside a Suspense boundary, or the build fails with "Uncached data was
+// accessed outside of <Suspense>". So the fetching lives in EntryLoader and
+// the page's job is only to draw the boundary around it.
+//
+// Two consequences worth knowing before the next screen is built:
+//   - `export const dynamic = "force-dynamic"` is BANNED under Cache
+//     Components. It is also unnecessary: nothing is cached unless explicitly
+//     marked, so this page is dynamic by default.
+//   - Every future screen that reads the database follows this same shape.
 // ---------------------------------------------------------------------------
+import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import VoucherEntry, { type MasterRow, type PartyRow } from "./VoucherEntry";
 
-export default async function EntryPage() {
+export default function EntryPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="p-8 text-sm text-gray-500">Loading masters…</main>
+      }
+    >
+      <EntryLoader />
+    </Suspense>
+  );
+}
+
+async function EntryLoader() {
   const supabase = await createClient();
 
   const { data: claims } = await supabase.auth.getClaims();
@@ -57,9 +83,9 @@ export default async function EntryPage() {
         <h1 className="text-lg font-semibold mb-2">Voucher entry</h1>
         <p className="text-red-700">
           Could not load the master lists
-          {mastersRes.error ? `: ${mastersRes.error.message}` : ""}. Nothing
-          can be entered without them — refresh, and if it persists check that
-          this login has an ACTIVE row in app_users.
+          {mastersRes.error ? `: ${mastersRes.error.message}` : ""}. Nothing can
+          be entered without them — refresh, and if it persists check that this
+          login has an ACTIVE row in app_users.
         </p>
       </main>
     );
