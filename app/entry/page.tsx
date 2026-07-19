@@ -63,7 +63,7 @@ async function EntryLoader() {
   if (!claims?.claims) redirect("/auth/login");
 
   // --- everything the screen needs, fetched in parallel -------------------
-  const [mastersRes, partiesRes, configRes, todayRes, cashRes] =
+  const [mastersRes, partiesRes, configRes, todayRes, cashRes, statsRes] =
     await Promise.all([
       supabase
         .from("master_values")
@@ -91,6 +91,9 @@ async function EntryLoader() {
           "VAGUE_NARRATION_MIN",
           "NARRATION_MIN",
           "LIVE_MODE",
+          "ONE_TIME_MAX",
+          "LINE_AMOUNT_WARN",
+          "PARTY_WARN_MULT",
         ]),
       supabase.rpc("fn_today"),
       supabase
@@ -98,6 +101,12 @@ async function EntryLoader() {
         .select("mode, balance")
         .eq("mode", "CASH")
         .maybeSingle(),
+      // Each party's own payment record (file 09). Small — one row per party
+      // ever paid. Feeds the self-calibrating large-amount warning: silent
+      // with no history, sharper every month, no per-party settings anywhere.
+      supabase
+        .from("v_party_payment_stats")
+        .select("party_code, times_paid, max_paid, avg_paid, last_paid"),
     ]);
 
   // A failed masters load means an unusable screen — say so plainly rather
@@ -138,6 +147,27 @@ async function EntryLoader() {
     parseInt(cfg["VAGUE_NARRATION_MIN"] ?? "15", 10) || 15;
   const narrationMin = parseInt(cfg["NARRATION_MIN"] ?? "5", 10) || 5;
   const sampleMode = (cfg["LIVE_MODE"] ?? "") === "SAMPLE";
+  // Mirrors of file 09's defaults, so a missing config row degrades to the
+  // same behaviour the database applies.
+  const oneTimeMax = parseFloat(cfg["ONE_TIME_MAX"] ?? "2000") || 2000;
+  const lineAmountWarn =
+    parseFloat(cfg["LINE_AMOUNT_WARN"] ?? "50000") || 50000;
+  const partyWarnMult = parseFloat(cfg["PARTY_WARN_MULT"] ?? "2") || 2;
+
+  // Party stats as a plain object keyed by code. A failed read (e.g. file 09
+  // not yet run) degrades to no pattern warnings, never to a dead screen.
+  const partyStats: Record<
+    string,
+    { times_paid: number; max_paid: number; avg_paid: number; last_paid: string }
+  > = {};
+  for (const r of statsRes.data ?? []) {
+    partyStats[String(r.party_code)] = {
+      times_paid: Number(r.times_paid),
+      max_paid: Number(r.max_paid),
+      avg_paid: Number(r.avg_paid),
+      last_paid: String(r.last_paid),
+    };
+  }
 
   // The estate's date (file 07). If even this fails, fall back to the
   // server's UTC date — a wrong default the user can retype beats a dead
@@ -159,6 +189,10 @@ async function EntryLoader() {
       narrationMin={narrationMin}
       vagueNarrationMin={vagueNarrationMin}
       sampleMode={sampleMode}
+      oneTimeMax={oneTimeMax}
+      lineAmountWarn={lineAmountWarn}
+      partyWarnMult={partyWarnMult}
+      partyStats={partyStats}
       initialCashBalance={cashBalance}
       userEmail={String(claims.claims.email ?? "")}
     />
