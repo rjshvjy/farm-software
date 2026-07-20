@@ -128,7 +128,6 @@ type EditLine = {
   amount: string;
   payee: string; // blank = inherit header payee
   narration: string;
-  party_code: string; // blank = inherit header party
   cost_nature: string; // carries forward as each new line copies the one above
 };
 
@@ -161,7 +160,6 @@ const emptyLine = (): EditLine => ({
   amount: "",
   payee: "",
   narration: "",
-  party_code: "",
   cost_nature: "",
 });
 
@@ -362,14 +360,14 @@ export default function SalesInvoice({
   // the payload applies, reused by every preview check so they cannot drift
   // from what is actually sent.
   // Effective values after inheritance and the one-time toggle. A line that
-  // names its own party overrides the toggle (a muster can pay Murugan the
-  // party and one stranger); otherwise a checked toggle means payee 'ONE
-  // TIME' and no party, exactly what file 09 expects.
+  // 20-07-2026: there is no per-line buyer on an invoice, so there is nothing
+  // to override the toggle. A checked toggle means payee 'ONE TIME' and no
+  // party for the whole voucher, which is what file 09 expects.
   const eff = (l: EditLine) => {
-    if (oneTime && !l.party_code) {
+    if (oneTime) {
       return { payee: "ONE TIME", party: "", costNature: l.cost_nature };
     }
-    const party = l.party_code || headerParty;
+    const party = headerParty;
     const partyName = party
       ? (partyByCode.get(party.toUpperCase())?.name ?? party)
       : "";
@@ -380,8 +378,8 @@ export default function SalesInvoice({
     };
   };
 
-  const narrFloor = (activity: string, lineHasParty = false) =>
-    vagueActivities.includes(activity) || (oneTime && !lineHasParty)
+  const narrFloor = (activity: string) =>
+    vagueActivities.includes(activity) || oneTime
       ? vagueNarrationMin
       : narrationMin;
 
@@ -393,8 +391,8 @@ export default function SalesInvoice({
     if (!d.cost_object) p.push("cost object");
     if (!d.activity) p.push("activity");
     if (!(num(d.amount) !== null && num(d.amount)! > 0)) p.push("amount");
-    if (d.narration.trim().length < narrFloor(d.activity, !!d.party_code))
-      p.push(`narration (min ${narrFloor(d.activity, !!d.party_code)})`);
+    if (d.narration.trim().length < narrFloor(d.activity))
+      p.push(`narration (min ${narrFloor(d.activity)})`);
     return p;
   }
 
@@ -444,7 +442,7 @@ export default function SalesInvoice({
     const n = i + 1;
     const e = eff(l);
     const lineOneTime = e.payee === "ONE TIME";
-    const floor = narrFloor(l.activity, !!l.party_code);
+    const floor = narrFloor(l.activity);
     const narr = l.narration.trim();
 
     // -- red: the DB will refuse --
@@ -803,7 +801,6 @@ export default function SalesInvoice({
     amount: "Invoice amount",
     narration: "Narration",
 
-    lineparty: "Party (this line)",
     linecostnature: "Cost nature",
   };
 
@@ -860,8 +857,6 @@ export default function SalesInvoice({
         const floor = narrFloor(draft.activity);
         return `Say what the boxes cannot — which part of the block, why it was needed, the chemical and dose, anything unusual. At least ${floor} characters. Do not repeat the farm, crop or labour count: those are already recorded. Copies into the next line.`;
       }
-      case "lineparty":
-        return "This line's buyer, when it differs from the header's — one slip covering two buyers is one voucher, two lines, two parties. Overrides the one-time toggle for this line.";
       case "linecostnature": {
         const cn = (masters["COST_NATURE"] ?? []).find(
           (c) => c.code === draft.cost_nature,
@@ -1370,7 +1365,7 @@ export default function SalesInvoice({
           <div>
             <label className={labelCls}>
               Invoice amount ₹
-              {oneTime && !draft.party_code && (
+              {oneTime && (
                 <span className="text-amber-600 dark:text-amber-400">
                   {" "}
                   (max ₹ {formatINR(oneTimeMax)} for one-time)
@@ -1406,35 +1401,35 @@ export default function SalesInvoice({
           </BandHint>
         </FieldBand>
 
-        {/* -------- WHO AND WHY -------- */}
-        <FieldBand title="Who and why">
-          <div className="md:col-span-2">
-            <label className={labelCls}>Buyer (this line)</label>
-            <Combo
-              value={draft.party_code}
-              display={
-                draft.party_code
-                  ? (partyByCode.get(draft.party_code.toUpperCase())?.name ??
-                    draft.party_code)
-                  : ""
-              }
-              onChange={(v) => {
-                setD("party_code", v);
-                const de = partyByCode.get(v.toUpperCase())?.default_entity;
-                if (de) setD("entity", de); // pre-fill, always overridable
-              }}
-              options={parties.map((p) => ({
-                code: p.party_code,
-                label: p.name,
-                sub: p.party_code,
-              }))}
-              placeholder={
-                oneTime ? "one-time — this line only" : "inherits header"
-              }
-              onFocus={() => setFocusKey("lineparty")}
-            />
-          </div>
-          <div className="md:col-span-4">
+        {/* -------- WHY --------
+            NO LINE-LEVEL BUYER HERE (removed 20-07-2026, owner ruling).
+            It was inherited from the payment screen, where the paper justifies
+            it: one muster slip lists twenty labourers, so one voucher carries
+            twenty lines and twenty payees. An INVOICE is the opposite kind of
+            document — it is addressed to ONE buyer. Tally enforces the same
+            thing: a sales voucher has exactly one Party A/c name, and nuts
+            split between two traders is two invoices, not one with two lines.
+
+            The risk was not cosmetic. On ON CREDIT every line raises a debtor
+            balance, so two parties on one invoice would have moved two
+            people's balances under a single invoice number, with nothing
+            downstream able to say whose invoice it was.
+
+            Lines still earn their keep — 500 coconuts and 40 kg of copra to
+            the same buyer is two crops, two quantities, one invoice. On an
+            invoice a line is a different THING SOLD, never a different person.
+
+            The rule this generalises to: a line-level party override belongs
+            only where the paper document genuinely names several people. A
+            muster does. An invoice never does.
+
+            party_code is gone from EditLine altogether, not left blank in the
+            type: a permanently-empty field is how the vestigial headerPayee
+            accumulated on the payment screen, and one vestige per screen is
+            how a file becomes unreadable. eff() now reads the header buyer
+            directly. ------------------------------------------------- */}
+        <FieldBand title="Why">
+          <div className="md:col-span-6">
             <label className={labelCls}>
               Narration{" "}
               <span
@@ -1461,7 +1456,7 @@ export default function SalesInvoice({
                 if (e.key === "Enter") commitDraft();
               }}
               placeholder={
-                oneTime && !draft.party_code
+                oneTime
                   ? "name the person and what they bought"
                   : "say what the boxes above cannot"
               }
