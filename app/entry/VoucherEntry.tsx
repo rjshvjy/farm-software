@@ -168,33 +168,12 @@ const emptyLine = (): EditLine => ({
 });
 
 // ---------------------------------------------------------------------------
-// Party code derivation — the screen's half of the inline-add bargain.
-// Full name uppercased (the schema's own convention: "short stable code,
-// e.g. 'RAJENDRAN'"), NOT abbreviated: dropping vowels merges exactly the
-// letters that distinguish similar names. Collision safety comes from the
-// check against the loaded list, not from squeezing.
+// AddPartyPanel (and its deriveCode / bumpCode helpers) moved to
+// components/entry/AddPartyPanel.tsx on 20-07-2026 — the receipt screen
+// shares the panel, differing only in defaultKind (see the call site below).
 // ---------------------------------------------------------------------------
-function deriveCode(name: string): string {
-  let c = name
-    .toUpperCase()
-    .replace(/[^A-Z0-9 ]+/g, " ") // punctuation → space
-    .replace(/\s+/g, " ")
-    .trim();
-  if (c.length > 24) {
-    c = c.slice(0, 24);
-    const cut = c.lastIndexOf(" ");
-    if (cut > 8) c = c.slice(0, cut); // break at a word, not mid-word
-  }
-  return c;
-}
+import { AddPartyPanel } from "@/components/entry/AddPartyPanel";
 
-function bumpCode(base: string, taken: (code: string) => boolean): string {
-  for (let n = 2; n < 100; n++) {
-    const c = `${base} ${n}`;
-    if (!taken(c)) return c;
-  }
-  return `${base} X`; // 99 same-named parties means a bigger problem
-}
 
 // ---------------------------------------------------------------------------
 // Shared leaf pieces — bands, pickers, styles, amount in words — moved to
@@ -214,173 +193,6 @@ import {
 } from "@/components/entry/ui";
 
 export { amountInWords };
-// ---------------------------------------------------------------------------
-// AddPartyPanel — inline, not a modal, not a page. Name prefilled from what
-// she typed; code derived and collision-checked live against the loaded list
-// (fn_party_upsert overwrites on collision by design — the screen owns this
-// question). On a clash: use the existing party, or take the auto-bumped
-// code. Mobile optional (decision C3). Parent state arrives as props so this
-// component can live at module level and keep focus while typing.
-// ---------------------------------------------------------------------------
-function AddPartyPanel({
-  typed,
-  partyByCode,
-  partyKinds,
-  busy,
-  err,
-  onSave,
-  onUseExisting,
-  onCancel,
-}: {
-  typed: string;
-  partyByCode: Map<string, PartyRow>;
-  partyKinds: PartyKindRow[];
-  busy: boolean;
-  err: string | null;
-  onSave: (
-    code: string,
-    name: string,
-    kind: PartyKind,
-    mobile: string,
-    defaultEntity: string | null,
-  ) => void;
-  onUseExisting: (code: string) => void;
-  onCancel: () => void;
-}) {
-  const [name, setName] = useState(typed);
-  const [code, setCode] = useState(deriveCode(typed));
-  // Default DAILY LABOUR, not SUPPLIER: on this estate that is right far more
-  // often — 1,821 labour rows against 599 supplier rows in the v9 workbook.
-  // Defaults should match the common case, not the alphabet.
-  const [kind, setKind] = useState<PartyKind>(
-    partyKinds.some((k) => k.code === "DAILY LABOUR")
-      ? "DAILY LABOUR"
-      : (partyKinds[0]?.code ?? ""),
-  );
-  const [mobile, setMobile] = useState("");
-
-  const clash = partyByCode.get(code.trim().toUpperCase()) ?? null;
-  const codeOk = code.trim().length > 0 && !clash;
-  const bumped = bumpCode(deriveCode(name), (c) =>
-    partyByCode.has(c.toUpperCase()),
-  );
-
-  // Kinds grouped for the dropdown, preserving the view's sort order.
-  const grouped: { group: string; rows: PartyKindRow[] }[] = [];
-  for (const k of partyKinds) {
-    const last = grouped[grouped.length - 1];
-    if (last && last.group === k.group_label) last.rows.push(k);
-    else grouped.push({ group: k.group_label, rows: [k] });
-  }
-
-  const chosen = partyKinds.find((k) => k.code === kind) ?? null;
-
-  return (
-    <div className="border border-input rounded-lg p-3 bg-muted/50 mt-2 mb-4 text-base">
-      <div className="font-medium mb-2">New party</div>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 items-end">
-        <div>
-          <label className={labelCls}>Name</label>
-          <input
-            className={inputCls}
-            value={name}
-            autoFocus
-            onChange={(e) => {
-              setName(e.target.value);
-              setCode(deriveCode(e.target.value));
-            }}
-          />
-        </div>
-        <div>
-          <label className={labelCls}>Code (stable, never renamed)</label>
-          <input
-            className={inputCls + (clash ? " border-red-500" : "")}
-            value={code}
-            onChange={(e) => setCode(e.target.value.toUpperCase())}
-          />
-        </div>
-        <div>
-          <label className={labelCls}>
-            Kind
-            {chosen?.default_entity && (
-              <span className="text-muted-foreground">
-                {" "}
-                · usually {chosen.default_entity.toLowerCase()}
-              </span>
-            )}
-          </label>
-          {partyKinds.length === 0 ? (
-            // File 10 not run: say so plainly rather than offer a wrong list.
-            <div className="text-sm text-red-700 dark:text-red-400 py-1.5">
-              No party kinds loaded — run SQL file 10.
-            </div>
-          ) : (
-            <select
-              className={inputCls}
-              value={kind}
-              onChange={(e) => setKind(e.target.value)}
-            >
-              {grouped.map((g) => (
-                <optgroup key={g.group} label={g.group}>
-                  {g.rows.map((k) => (
-                    <option key={k.code} value={k.code}>
-                      {k.label}
-                    </option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
-          )}
-        </div>
-        <div>
-          <label className={labelCls}>Mobile (optional)</label>
-          <input
-            className={inputCls}
-            value={mobile}
-            onChange={(e) => setMobile(e.target.value)}
-          />
-        </div>
-      </div>
-
-      {clash && (
-        <div className="mt-2 text-amber-700 dark:text-amber-400">
-          Code <strong>{clash.party_code}</strong> already belongs to “
-          {clash.name}”.{" "}
-          <button className="underline" onClick={() => onUseExisting(clash.party_code)}>
-            Use the existing party
-          </button>{" "}
-          ·{" "}
-          <button className="underline" onClick={() => setCode(bumped)}>
-            Create new as “{bumped}”
-          </button>
-        </div>
-      )}
-
-      {err && <div className="mt-2 text-red-700 dark:text-red-400">{err}</div>}
-
-      <div className="mt-3 flex gap-2">
-        <button
-          className="bg-primary text-primary-foreground rounded px-3 py-1.5 disabled:opacity-50"
-          disabled={!codeOk || !name.trim() || !kind || busy}
-          onClick={() =>
-            onSave(
-              code.trim(),
-              name.trim(),
-              kind,
-              mobile,
-              chosen?.default_entity ?? null,
-            )
-          }
-        >
-          {busy ? "Saving…" : "Save party"}
-        </button>
-        <button className="border border-input rounded px-3 py-1.5" onClick={onCancel}>
-          Cancel
-        </button>
-      </div>
-    </div>
-  );
-}
 
 // ---------------------------------------------------------------------------
 
@@ -1257,6 +1069,10 @@ export default function VoucherEntry({
           typed={addingParty.typed}
           partyByCode={partyByCode}
           partyKinds={partyKinds}
+          // The payment screen's common case: 1,821 labour rows against 599
+          // supplier rows in the v9 workbook. The panel resolves this against
+          // the loaded list; absent falls back to the first kind.
+          defaultKind="DAILY LABOUR"
           busy={partyBusy}
           err={partyErr}
           onSave={submitAddParty}
