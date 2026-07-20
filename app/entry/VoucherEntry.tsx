@@ -59,6 +59,7 @@ import {
   createParty,
   type VoucherLine,
   type SaveResult,
+  type PartyKind,
 } from "./actions";
 
 // --- types coming from the server component --------------------------------
