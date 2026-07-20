@@ -1,3 +1,9 @@
+// https://github.com/rjshvjy/farm-software/blob/main/components/login-form.tsx
+// components/login-form.tsx
+// ---------------------------------------------------------------------------
+// Sign-in form. From the Vercel/Supabase starter; the only change this project
+// has made is where it lands after a successful sign-in — see below.
+// ---------------------------------------------------------------------------
 "use client";
 
 import { cn } from "@/lib/utils";
@@ -39,7 +45,8 @@ export function LoginForm({
       });
       if (error) throw error;
       // Update this route to redirect to an authenticated route. The user already has an active session.
-      router.push("/protected");
+      // Land on the home page, not the starter templates /protected (20-07-2026).
+      router.push("/");
     } catch (error: unknown) {
       setError(error instanceof Error ? error.message : "An error occurred");
     } finally {
