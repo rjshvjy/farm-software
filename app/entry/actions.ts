@@ -127,13 +127,29 @@ export async function saveVoucher(lines: VoucherLine[]): Promise<SaveResult> {
 // cannot ask a question.
 // ---------------------------------------------------------------------------
 
-export type PartyKind = "SUPPLIER" | "CUSTOMER" | "BOTH";
+/**
+ * A party kind. Plain string since file 10: the permitted values live in the
+ * PARTY_KIND master, not in a frozen union here. The old three-way
+ * SUPPLIER/CUSTOMER/BOTH was a trade taxonomy, and this estate pays almost
+ * nobody who fits it — 1,821 labour rows against 599 supplier rows in the v9
+ * workbook. A tractor driver had to be filed as a SUPPLIER.
+ *
+ * The database validates against the master by trigger, so an invalid kind is
+ * refused there with a message naming the fix. Nothing is lost by widening the
+ * type; the authority simply moved to where it belongs.
+ */
+export type PartyKind = string;
 
 export type CreatePartyResult =
   | {
       ok: true;
       /** As fn_party_upsert stored it (code uppercased/trimmed by the DB). */
-      party: { party_code: string; name: string; kind: PartyKind };
+      party: {
+        party_code: string;
+        name: string;
+        kind: PartyKind;
+        default_entity: string | null;
+      };
     }
   | { ok: false; message: string };
 
@@ -142,6 +158,8 @@ export async function createParty(
   name: string,
   kind: PartyKind,
   mobile?: string | null,
+  /** File 10. Omitted, the database takes it from the kind's own default. */
+  defaultEntity?: string | null,
 ): Promise<CreatePartyResult> {
   const supabase = await createClient();
 
@@ -156,6 +174,7 @@ export async function createParty(
     p_kind: kind,
     p_mobile: mobile ?? null,
     p_notes: null,
+    p_default_entity: defaultEntity ?? null,
   });
 
   if (error) {
@@ -165,6 +184,11 @@ export async function createParty(
   // fn_party_upsert returns the stored code (uppercased, trimmed).
   return {
     ok: true,
-    party: { party_code: data as string, name: name.trim(), kind },
+    party: {
+      party_code: data as string,
+      name: name.trim(),
+      kind,
+      default_entity: defaultEntity ?? null,
+    },
   };
 }
