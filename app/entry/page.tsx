@@ -40,7 +40,11 @@
 import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import VoucherEntry, { type MasterRow, type PartyRow } from "./VoucherEntry";
+import VoucherEntry, {
+  type MasterRow,
+  type PartyRow,
+  type PartyKindRow,
+} from "./VoucherEntry";
 
 export default function EntryPage() {
   return (
@@ -63,8 +67,15 @@ async function EntryLoader() {
   if (!claims?.claims) redirect("/auth/login");
 
   // --- everything the screen needs, fetched in parallel -------------------
-  const [mastersRes, partiesRes, configRes, todayRes, cashRes, statsRes] =
-    await Promise.all([
+  const [
+    mastersRes,
+    partiesRes,
+    configRes,
+    todayRes,
+    cashRes,
+    statsRes,
+    kindsRes,
+  ] = await Promise.all([
       supabase
         .from("master_values")
         .select(
@@ -77,7 +88,10 @@ async function EntryLoader() {
         // kind is new here: a party created inline mid-voucher must render
         // exactly like a preloaded one, and the add panel defaults kind from
         // context — so the screen needs to know it for existing parties too.
-        .select("party_code, name, kind")
+        // default_entity (file 10) pre-fills the line's entity when a party
+        // is chosen. kind is now a PARTY_KIND master value, not one of three
+        // frozen strings.
+        .select("party_code, name, kind, default_entity")
         .eq("status", "ACTIVE")
         .order("name", { ascending: true }),
       supabase
@@ -107,6 +121,13 @@ async function EntryLoader() {
       supabase
         .from("v_party_payment_stats")
         .select("party_code, times_paid, max_paid, avg_paid, last_paid"),
+      // Selectable party kinds with their group heading (file 10). Group
+      // headers are already filtered out by the view — they are headings,
+      // never choices.
+      supabase
+        .from("v_party_kinds")
+        .select("code, label, group_label, default_entity, sort_order")
+        .order("sort_order", { ascending: true }),
     ]);
 
   // A failed masters load means an unusable screen — say so plainly rather
@@ -132,6 +153,10 @@ async function EntryLoader() {
   }
 
   const parties: PartyRow[] = partiesRes.data ?? [];
+
+  // Empty if file 10 has not been run yet; the New party panel then says so
+  // plainly rather than offering a silently wrong list.
+  const partyKinds: PartyKindRow[] = kindsRes.data ?? [];
 
   // Config, mirroring the database's own defaults (files 06 and 08) so a
   // missing row degrades to the same behaviour the DB would apply — the
@@ -193,6 +218,7 @@ async function EntryLoader() {
       lineAmountWarn={lineAmountWarn}
       partyWarnMult={partyWarnMult}
       partyStats={partyStats}
+      partyKinds={partyKinds}
       initialCashBalance={cashBalance}
       userEmail={String(claims.claims.email ?? "")}
     />
