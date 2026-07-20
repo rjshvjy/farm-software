@@ -20,9 +20,18 @@
 // WHAT IS DIFFERENT FROM THE PAYMENT SCREEN, AND WHY:
 //   - saveReceipt sends received_cr and voucher type RECEIPT: own series
 //     R/26/0001 (file 12), and the DB demands at least one money-in line.
-//   - "Received from" replaces "Payee". Same party register, same inline
-//     add — but the panel defaults to CUSTOMER, not DAILY LABOUR: the
-//     person in front of you is usually buying produce.
+//   - "Buyer" replaces "Payee". Same party register, same inline add — but
+//     the panel defaults to CUSTOMER, not DAILY LABOUR: the person in front
+//     of you is usually buying produce.
+//
+//   - THE LANGUAGE MUST NOT ASSUME THE MONEY HAS ARRIVED (20-07-2026). This
+//     screen was renamed from ReceiptEntry and kept its wording for a few
+//     hours: "Received from", "Money received", "Amount received". On a CASH
+//     sale that is true; on an ON CREDIT sale it is the opposite of true —
+//     the buyer takes the nuts today and pays next month, which is the whole
+//     point of a credit sale. An invoice records what is DUE. Where the
+//     wording genuinely depends on the mode it now follows modeKind, and
+//     everywhere else it is neutral.
 //   - QUANTITY IS THE POINT (§17.6): without it there is no realisation
 //     rate and yield per acre stays unanswerable. Owner's ruling 20-07:
 //     blank SAVES and is FLAGGED, never refused — a chopped tree sells as
@@ -411,7 +420,7 @@ export default function SalesInvoice({
   const redMsgs: string[] = [];
   const amberMsgs: string[] = [];
 
-  if (!dateISO) redMsgs.push(`Receipt date "${dateText}" is not a date.`);
+  if (!dateISO) redMsgs.push(`Invoice date "${dateText}" is not a date.`);
   if (!periodFromISO)
     redMsgs.push(
       periodFromText
@@ -428,7 +437,7 @@ export default function SalesInvoice({
     redMsgs.push("Period to is before period from. A period cannot run backwards.");
   if (oneTime && modeKind === "CREDIT")
     redMsgs.push(
-      "A one-time payer cannot be used on credit — nobody in particular cannot owe you money. Name the party.",
+      "A one-time buyer cannot be sold to on credit — nobody in particular cannot owe you money. Name the party.",
     );
 
   allLines.forEach((l, i) => {
@@ -442,7 +451,7 @@ export default function SalesInvoice({
     if (narr.length < floor)
       redMsgs.push(
         lineOneTime
-          ? `Line ${n}: a one-time payer needs the person named in the narration — who paid us, and for what (min ${floor} characters).`
+          ? `Line ${n}: a one-time buyer needs the person named in the narration — who bought, and what (min ${floor} characters).`
           : vagueActivities.includes(l.activity)
             ? `Line ${n}: ${l.activity} is a last resort — say what it was actually for (min ${floor} characters).`
             : `Line ${n}: narration needs at least ${floor} characters.`,
@@ -454,7 +463,7 @@ export default function SalesInvoice({
     if (partyRequired && !e.party)
       redMsgs.push(
         modeKind === "BANK"
-          ? `Line ${n}: a bank receipt needs a party — the statement will name who paid, and the book must match it.`
+          ? `Line ${n}: a bank sale needs a party — the statement will name who paid, and the book must match it.`
           : `Line ${n}: a credit sale needs a party — somebody in particular owes this money.`,
       );
 
@@ -465,7 +474,7 @@ export default function SalesInvoice({
       );
     if (modeKind === "CASH" && !e.payee && !e.party)
       amberMsgs.push(
-        `Line ${n}: cash received with nobody named — will be flagged (NO PAYEE).`,
+        `Line ${n}: cash sale with nobody named — will be flagged (NO PAYEE).`,
       );
     if (farmHasBlocks(l.farm) && (l.block || "YET TO ASSIGN") === "YET TO ASSIGN")
       amberMsgs.push(
@@ -487,10 +496,10 @@ export default function SalesInvoice({
       );
     // file 09 mirror: one-time flag + threshold
     if (lineOneTime) {
-      amberMsgs.push(`Line ${n}: one-time payer — will be flagged for the review queue.`);
+      amberMsgs.push(`Line ${n}: one-time buyer — will be flagged for the review queue.`);
       if (amt !== null && amt > oneTimeMax)
         amberMsgs.push(
-          `Line ${n}: ₹ ${formatINR(amt)} from a one-time payer (limit ₹ ${formatINR(oneTimeMax)}) — a receipt this size probably deserves a named party.`,
+          `Line ${n}: ₹ ${formatINR(amt)} to a one-time buyer (limit ₹ ${formatINR(oneTimeMax)}) — a sale this size probably deserves a named party.`,
         );
     }
     // file 09 mirror: flat large-amount check — the extra-zero catcher
@@ -509,7 +518,7 @@ export default function SalesInvoice({
       ) {
         const pname = partyByCode.get(e.party.toUpperCase())?.name ?? e.party;
         amberMsgs.push(
-          `Line ${n}: ₹ ${formatINR(amt)} from ${pname} — their largest ever receipt is ₹ ${formatINR(st.max_received)} across ${st.times_received} receipts. Check the figure.`,
+          `Line ${n}: ₹ ${formatINR(amt)} from ${pname} — the most they have ever brought in is ₹ ${formatINR(st.max_received)} across ${st.times_received} times. Check the figure.`,
         );
       }
     }
@@ -779,10 +788,10 @@ export default function SalesInvoice({
   const FIELD_LABEL: Record<string, string> = {
     date: "Invoice date",
     mode: "Mode",
-    onetime: "One-time payer",
+    onetime: "One-time buyer",
     pfrom: "Period from",
     pto: "Period to",
-    party: "Received from",
+    party: "Buyer",
     entity: "Entity",
     farm: "Farm",
     block: "Block",
@@ -791,7 +800,7 @@ export default function SalesInvoice({
     qty: "Qty sold",
     unit: "Unit",
     rate: "Rate",
-    amount: "Amount received",
+    amount: "Invoice amount",
     narration: "Narration",
 
     lineparty: "Party (this line)",
@@ -804,7 +813,7 @@ export default function SalesInvoice({
         return 'Invoice date, DD/MM/YYYY — or just "19" for the 19th of this month, "19/6", "1907". The line below shows how it will be read.';
       case "mode": {
         const base =
-          "How the money arrived. Bank and credit modes need a party — a bank statement names who paid, and a credit sale needs somebody who owes it.";
+          "How this sale is settled. CASH or a bank mode means the money is in now; ON CREDIT means the buyer owes it and his balance rises until he pays. Bank and credit modes both need a party.";
         return modeRow?.notes ? `${base}  ·  ${mode}: ${modeRow.notes}` : base;
       }
 
@@ -846,19 +855,19 @@ export default function SalesInvoice({
           ? `₹ per ${draft.unit} — the price agreed. Amount fills itself as quantity × rate; overtype it if the slip says otherwise, and the mismatch becomes the realisation warning.`
           : "₹ per unit sold. Amount fills itself as quantity × rate.";
       case "amount":
-        return "₹ received on this line. Enter commits the line and opens the next.";
+        return "₹ this line comes to — received now on a cash sale, owed by the buyer on a credit one. Enter commits the line and opens the next.";
       case "narration": {
         const floor = narrFloor(draft.activity);
         return `Say what the boxes cannot — which part of the block, why it was needed, the chemical and dose, anything unusual. At least ${floor} characters. Do not repeat the farm, crop or labour count: those are already recorded. Copies into the next line.`;
       }
       case "lineparty":
-        return "This line's payer, when it differs from the header's — one slip covering two buyers is one voucher, two lines, two parties. Overrides the one-time toggle for this line.";
+        return "This line's buyer, when it differs from the header's — one slip covering two buyers is one voucher, two lines, two parties. Overrides the one-time toggle for this line.";
       case "linecostnature": {
         const cn = (masters["COST_NATURE"] ?? []).find(
           (c) => c.code === draft.cost_nature,
         );
         const base =
-          "A payment-side question the schema asks of every row — defaulted to OTHER on receipts. Change it only for the odd receipt that genuinely has one (a transport charge recovered).";
+          "A cost classification the schema still asks of every transaction row. A sale has none, so this screen sends OTHER without asking (§16.3).";
         return cn?.notes ? `${base}  ·  ${cn.code}: ${cn.notes}` : base;
       }
       default:
@@ -921,13 +930,13 @@ export default function SalesInvoice({
         </div>
         <div>
           <label className={labelCls}>
-            Received from{partyRequired ? " (required)" : ""}
+            Buyer{partyRequired ? " (required)" : ""}
           </label>
           <Combo
             value={headerParty}
             display={
               oneTime
-                ? "— one-time payer —"
+                ? "— one-time buyer —"
                 : headerParty
                   ? (partyByCode.get(headerParty.toUpperCase())?.name ??
                     headerParty)
@@ -994,7 +1003,7 @@ export default function SalesInvoice({
                 setFocusKey("onetime");
               }}
             />
-            One-time payer
+            One-time buyer
           </label>
         </div>
         <div>
@@ -1247,8 +1256,8 @@ export default function SalesInvoice({
               onFocus={() => setFocusKey("block")}
             />
           </div>
-          {/* Entity is BUSINESS on almost every receipt — kept last in the
-              band. No Capex field here: a receipt is not spending, the DB
+          {/* Entity is BUSINESS on almost every sale — kept last in the
+              band. No Capex field here: a sale is not spending, the DB
               default applies, and an asset sale is the journal's job
               (§17.4). FUNDING is the one that matters: owner money in is
               capital, never income, and the help strip teaches it. */}
@@ -1263,8 +1272,8 @@ export default function SalesInvoice({
           </div>
         </FieldBand>
 
-        {/* -------- WHAT CAME IN -------- */}
-        <FieldBand title="What came in">
+        {/* -------- WHAT WAS SOLD, UNDER WHICH HEAD -------- */}
+        <FieldBand title="Income head">
           <div className="md:col-span-6">
             <label className={labelCls}>Activity (type to search)</label>
             <Combo
@@ -1347,8 +1356,8 @@ export default function SalesInvoice({
           </BandHint>
         </FieldBand>
 
-        {/* -------- MONEY RECEIVED -------- */}
-        <FieldBand title="Money received">
+        {/* -------- THE AMOUNT -------- */}
+        <FieldBand title="Amount">
           <div>
             <label className={labelCls}>{rateLabel(draft)}</label>
             <input
@@ -1360,7 +1369,7 @@ export default function SalesInvoice({
           </div>
           <div>
             <label className={labelCls}>
-              Amount received ₹
+              Invoice amount ₹
               {oneTime && !draft.party_code && (
                 <span className="text-amber-600 dark:text-amber-400">
                   {" "}
@@ -1388,6 +1397,9 @@ export default function SalesInvoice({
                 ₹ {formatINR(num(draft.amount)!)} — {amountInWords(num(draft.amount)!)}.
               </strong>
             ) : null}{" "}
+            {modeKind === "CREDIT"
+              ? "ON CREDIT: no money moves today. This raises what the buyer owes, and it falls when he pays through a receipt."
+              : "Cash or bank: the money is in now and cash in hand moves."}{" "}
             {draft.unit
               ? `₹ per ${draft.unit} × how much sold. Amount fills itself — overtype if the slip differs, and the gap becomes the realisation warning.`
               : "Amount fills itself as quantity × rate once both are in."}
@@ -1397,7 +1409,7 @@ export default function SalesInvoice({
         {/* -------- WHO AND WHY -------- */}
         <FieldBand title="Who and why">
           <div className="md:col-span-2">
-            <label className={labelCls}>Received from (this line)</label>
+            <label className={labelCls}>Buyer (this line)</label>
             <Combo
               value={draft.party_code}
               display={
