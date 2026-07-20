@@ -59,7 +59,6 @@ import {
   createParty,
   type VoucherLine,
   type SaveResult,
-  type PartyKind,
 } from "./actions";
 
 // --- types coming from the server component --------------------------------
@@ -75,7 +74,25 @@ export type MasterRow = {
   notes: string | null;
 };
 
-export type PartyRow = { party_code: string; name: string; kind: string };
+export type PartyRow = {
+  party_code: string;
+  name: string;
+  kind: string;
+  /** File 10: the entity this party usually belongs to. PRE-FILLS the line's
+   *  entity and never enforces — the shopkeeper sells fertiliser (BUSINESS)
+   *  and household groceries (PERSONAL), same party, both entities. */
+  default_entity?: string | null;
+};
+
+/** A selectable PARTY_KIND value (file 10, view v_party_kinds). Group headers
+ *  are filtered out by the view — they are headings, never choices. */
+export type PartyKindRow = {
+  code: string;
+  label: string;
+  group_label: string;
+  default_entity: string | null;
+  sort_order: number;
+};
 
 type Props = {
   masters: Record<string, MasterRow[]>;
@@ -96,6 +113,8 @@ type Props = {
     string,
     { times_paid: number; max_paid: number; avg_paid: number; last_paid: string }
   >;
+  /** Selectable party kinds, grouped. Empty means file 10 has not been run. */
+  partyKinds: PartyKindRow[];
   userEmail: string;
 };
 
@@ -459,6 +478,7 @@ function Combo({
 function AddPartyPanel({
   typed,
   partyByCode,
+  partyKinds,
   busy,
   err,
   onSave,
@@ -467,15 +487,29 @@ function AddPartyPanel({
 }: {
   typed: string;
   partyByCode: Map<string, PartyRow>;
+  partyKinds: PartyKindRow[];
   busy: boolean;
   err: string | null;
-  onSave: (code: string, name: string, kind: PartyKind, mobile: string) => void;
+  onSave: (
+    code: string,
+    name: string,
+    kind: PartyKind,
+    mobile: string,
+    defaultEntity: string | null,
+  ) => void;
   onUseExisting: (code: string) => void;
   onCancel: () => void;
 }) {
   const [name, setName] = useState(typed);
   const [code, setCode] = useState(deriveCode(typed));
-  const [kind, setKind] = useState<PartyKind>("SUPPLIER");
+  // Default DAILY LABOUR, not SUPPLIER: on this estate that is right far more
+  // often — 1,821 labour rows against 599 supplier rows in the v9 workbook.
+  // Defaults should match the common case, not the alphabet.
+  const [kind, setKind] = useState<PartyKind>(
+    partyKinds.some((k) => k.code === "DAILY LABOUR")
+      ? "DAILY LABOUR"
+      : (partyKinds[0]?.code ?? ""),
+  );
   const [mobile, setMobile] = useState("");
 
   const clash = partyByCode.get(code.trim().toUpperCase()) ?? null;
@@ -483,6 +517,16 @@ function AddPartyPanel({
   const bumped = bumpCode(deriveCode(name), (c) =>
     partyByCode.has(c.toUpperCase()),
   );
+
+  // Kinds grouped for the dropdown, preserving the view's sort order.
+  const grouped: { group: string; rows: PartyKindRow[] }[] = [];
+  for (const k of partyKinds) {
+    const last = grouped[grouped.length - 1];
+    if (last && last.group === k.group_label) last.rows.push(k);
+    else grouped.push({ group: k.group_label, rows: [k] });
+  }
+
+  const chosen = partyKinds.find((k) => k.code === kind) ?? null;
 
   return (
     <div className="border border-input rounded-lg p-3 bg-muted/50 mt-2 mb-4 text-base">
@@ -509,16 +553,37 @@ function AddPartyPanel({
           />
         </div>
         <div>
-          <label className={labelCls}>Kind</label>
-          <select
-            className={inputCls}
-            value={kind}
-            onChange={(e) => setKind(e.target.value as PartyKind)}
-          >
-            <option value="SUPPLIER">SUPPLIER</option>
-            <option value="CUSTOMER">CUSTOMER</option>
-            <option value="BOTH">BOTH</option>
-          </select>
+          <label className={labelCls}>
+            Kind
+            {chosen?.default_entity && (
+              <span className="text-muted-foreground">
+                {" "}
+                · usually {chosen.default_entity.toLowerCase()}
+              </span>
+            )}
+          </label>
+          {partyKinds.length === 0 ? (
+            // File 10 not run: say so plainly rather than offer a wrong list.
+            <div className="text-sm text-red-700 dark:text-red-400 py-1.5">
+              No party kinds loaded — run SQL file 10.
+            </div>
+          ) : (
+            <select
+              className={inputCls}
+              value={kind}
+              onChange={(e) => setKind(e.target.value)}
+            >
+              {grouped.map((g) => (
+                <optgroup key={g.group} label={g.group}>
+                  {g.rows.map((k) => (
+                    <option key={k.code} value={k.code}>
+                      {k.label}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          )}
         </div>
         <div>
           <label className={labelCls}>Mobile (optional)</label>
@@ -549,8 +614,16 @@ function AddPartyPanel({
       <div className="mt-3 flex gap-2">
         <button
           className="bg-primary text-primary-foreground rounded px-3 py-1.5 disabled:opacity-50"
-          disabled={!codeOk || !name.trim() || busy}
-          onClick={() => onSave(code.trim(), name.trim(), kind, mobile)}
+          disabled={!codeOk || !name.trim() || !kind || busy}
+          onClick={() =>
+            onSave(
+              code.trim(),
+              name.trim(),
+              kind,
+              mobile,
+              chosen?.default_entity ?? null,
+            )
+          }
         >
           {busy ? "Saving…" : "Save party"}
         </button>
@@ -577,6 +650,7 @@ export default function VoucherEntry({
   lineAmountWarn,
   partyWarnMult,
   partyStats,
+  partyKinds,
   userEmail,
 }: Props) {
   // ---- header: defaults for every line, set once per paper slip ----------
@@ -1127,10 +1201,17 @@ export default function VoucherEntry({
     name: string,
     kind: PartyKind,
     mobile: string,
+    defaultEntity: string | null,
   ) {
     setPartyBusy(true);
     setPartyErr(null);
-    const res = await createParty(code, name, kind, mobile || null);
+    const res = await createParty(
+      code,
+      name,
+      kind,
+      mobile || null,
+      defaultEntity,
+    );
     setPartyBusy(false);
     if (!res.ok) {
       setPartyErr(res.message);
@@ -1141,6 +1222,9 @@ export default function VoucherEntry({
     );
     setHeaderParty(res.party.party_code);
     setOneTime(false); // naming a party is the opposite of a one-time payee
+    if (res.party.default_entity && lines.length === 0) {
+      setD("entity", res.party.default_entity);
+    }
     setAddingParty(null);
     setTimeout(() => partyInputRef.current?.focus(), 0);
   }
@@ -1201,7 +1285,7 @@ export default function VoucherEntry({
       case "onetime":
         return `A person you will not pay again — the blade sharpener, the auto driver. Their NAME goes in the narration (${vagueNarrationMin}+ characters), the line is flagged for review, and above ₹ ${formatINR(oneTimeMax)} you will be nudged to name a real party. Not available on credit.`;
       case "entity":
-        return "BUSINESS = the farms. PERSONAL = the household. FUNDING = owner money moving in or out.";
+        return "BUSINESS = the farms. PERSONAL = the household. FUNDING = owner money moving in or out. Pre-filled from the payee's usual side — change it freely, this line is the truth.";
       case "farm":
         return "Which farm this line belongs to.";
       case "block":
@@ -1329,6 +1413,14 @@ export default function VoucherEntry({
               setHeaderParty(v);
               setOneTime(false);
               setArmed(false);
+              // File 10: the party's usual entity PRE-FILLS the line. It never
+              // enforces — the shopkeeper sells fertiliser (BUSINESS) and
+              // household groceries (PERSONAL), same party, both entities. So
+              // this only fills the draft, and only while no line is committed;
+              // once she has started a voucher, changing the payee must not
+              // quietly re-file the work she has already described.
+              const de = partyByCode.get(v.toUpperCase())?.default_entity;
+              if (de && lines.length === 0) setD("entity", de);
             }}
             options={parties.map((p) => ({
               code: p.party_code,
@@ -1417,6 +1509,7 @@ export default function VoucherEntry({
         <AddPartyPanel
           typed={addingParty.typed}
           partyByCode={partyByCode}
+          partyKinds={partyKinds}
           busy={partyBusy}
           err={partyErr}
           onSave={submitAddParty}
@@ -1814,7 +1907,11 @@ export default function VoucherEntry({
                     draft.party_code)
                   : ""
               }
-              onChange={(v) => setD("party_code", v)}
+              onChange={(v) => {
+                setD("party_code", v);
+                const de = partyByCode.get(v.toUpperCase())?.default_entity;
+                if (de) setD("entity", de); // pre-fill, always overridable
+              }}
               options={parties.map((p) => ({
                 code: p.party_code,
                 label: p.name,
