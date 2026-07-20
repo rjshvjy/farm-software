@@ -153,10 +153,44 @@ async function EntryLoader() {
   }
 
   const parties: PartyRow[] = partiesRes.data ?? [];
-
-  // Empty if file 10 has not been run yet; the New party panel then says so
-  // plainly rather than offering a silently wrong list.
   const partyKinds: PartyKindRow[] = kindsRes.data ?? [];
+
+  // -- WHY THESE LINES EXIST (20-07-2026) ---------------------------------
+  // Every secondary read below used to end in `?? []`, which threw the error
+  // away and left the screen to invent an explanation. On 20-07 the Kind
+  // dropdown went empty and the panel blamed "run SQL file 10" — file 10 had
+  // been run months earlier; the master held 36 rows and the view returned
+  // 30 to `authenticated`. Three rounds of diagnosis went into a question the
+  // screen could have answered in one line. A read that fails must SAY it
+  // failed, and name the object, so the next person starts from the fact
+  // rather than from a guess.
+  //
+  // These are non-fatal by design: masters failing is a dead screen (handled
+  // above), but a missing pattern view or kinds list should degrade, not
+  // block. The banner tells the truth and entry continues.
+  const loadWarnings: string[] = [];
+  if (kindsRes.error)
+    loadWarnings.push(
+      `Party kinds (v_party_kinds) did not load: ${kindsRes.error.message}. Adding a party inline will not work until this is fixed.`,
+    );
+  else if (partyKinds.length === 0)
+    loadWarnings.push(
+      "Party kinds (v_party_kinds) returned no rows. The view exists but is empty for this login — check RLS, then PostgREST's schema cache (notify pgrst, 'reload schema').",
+    );
+  if (partiesRes.error)
+    loadWarnings.push(`Parties did not load: ${partiesRes.error.message}.`);
+  if (statsRes.error)
+    loadWarnings.push(
+      `Party payment history (v_party_payment_stats) did not load: ${statsRes.error.message}. The large-amount warning will stay silent.`,
+    );
+  if (configRes.error)
+    loadWarnings.push(
+      `Config did not load: ${configRes.error.message}. Screen defaults are in use — the database still applies its own.`,
+    );
+  if (todayRes.error)
+    loadWarnings.push(
+      `fn_today() failed: ${todayRes.error.message}. The date box is seeded from the server clock, not the estate's.`,
+    );
 
   // Config, mirroring the database's own defaults (files 06 and 08) so a
   // missing row degrades to the same behaviour the DB would apply — the
@@ -206,6 +240,20 @@ async function EntryLoader() {
     !cashRes.error && cashRes.data ? Number(cashRes.data.balance) : null;
 
   return (
+    <>
+      {loadWarnings.length > 0 && (
+        <div className="max-w-6xl mx-auto px-4 pt-4">
+          <div className="border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/30 text-amber-900 dark:text-amber-300 rounded p-3 text-base">
+            <div className="font-medium mb-1">
+              Part of this screen did not load. Entry still works; what is
+              named below does not.
+            </div>
+            {loadWarnings.map((w, i) => (
+              <div key={i}>· {w}</div>
+            ))}
+          </div>
+        </div>
+      )}
     <VoucherEntry
       masters={masters}
       parties={parties}
@@ -222,5 +270,6 @@ async function EntryLoader() {
       initialCashBalance={cashBalance}
       userEmail={String(claims.claims.email ?? "")}
     />
+    </>
   );
 }
