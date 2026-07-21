@@ -31,8 +31,71 @@
 --   Master VALUES are deliberately excluded — 76 activities are data, not
 --   schema. Only the list inventory appears: which lists exist, how many
 --   active values, and which attribute columns each actually uses.
+--   ONE EXCEPTION, added 21-07-2026: see the voucher-types note below.
+--
+--   FOUR SECTIONS ADDED 20-07-2026, and they DO name specific tables, which
+--   every other section deliberately avoids. The exception is earned: these
+--   four hold data that BEHAVES LIKE SCHEMA — change a row and the system's
+--   rules change — and their absence blocked three separate diagnoses in one
+--   day:
+--
+--     Chart of accounts   'is 1310 really debtors?' could not be answered from
+--                         this document while writing file 14. It was inferred
+--                         from a foreign key instead.
+--     Posting rules       whether ON CREDIT maps sales to debtors is the single
+--                         line deciding whether every credit sale posts to the
+--                         right side. It had to become a smoke test.
+--     Permissions         six roles, ten capabilities, and no way to see who
+--                         holds what. The launcher (20-07) is the first thing
+--                         that reads this table for any purpose other than
+--                         refusing somebody.
+--     RLS and grants      when v_party_kinds went unreadable through the API,
+--                         neither its policies nor its privileges could be
+--                         checked here. The cause turned out to be PostgREST's
+--                         schema cache — but ruling out the database took an
+--                         evening it should not have.
+--
+--   Their columns are still read generically where they can be: anything
+--   beyond the few structural columns is picked up from the row itself, so a
+--   column added next month appears without this file being touched.
 --
 --   Changes nothing. Safe to run at any time, any number of times.
+--
+-- ----------------------------------------------------------------------------
+-- TWO CHANGES, 21-07-2026
+-- ----------------------------------------------------------------------------
+--   1. BUG FIX — the security section would not run at all.
+--
+--      pg_policy.polcmd is Postgres's internal "char" type, and
+--          text || "char"
+--      is ambiguous: 42725, operator is not unique. It fails at PARSE time,
+--      so it failed whether or not any policy existed. It is now cast
+--      explicitly and mapped to the same words the earlier snapshots show
+--      (SELECT / INSERT / UPDATE / DELETE / ALL) rather than the raw letters
+--      r / a / w / d / *, which nobody would recognise.
+--
+--      Worth recording: the snapshot of 20-07 renders 'read_all (SELECT)',
+--      which this file as written could never have produced. So the file in
+--      the repo had DRIFTED from the version that actually ran — the exact
+--      failure mode §14 exists to prevent, in the tool meant to prevent it.
+--      The lesson is the standing one: what ran is the truth, and the editor
+--      copy must be pushed back to GitHub, not the other way round.
+--
+--   2. NEW SECTION — voucher types, listed in full.
+--
+--      The rule above says master VALUES are data, not schema, and it holds
+--      for the 77 activities. VOUCHER_TYPE is the exception that earns the
+--      same treatment as chart of accounts and posting rules: fn_save_voucher
+--      BRANCHES on voucher_shape and voucher_direction, so changing one of
+--      these six rows changes what the database demands and refuses. That is
+--      the definition this file already uses for an earned exception.
+--
+--      It was blind on 21-07 while adding the DRAWINGS type: this document
+--      said 'VOUCHER_TYPE 6 active | uses: voucher_direction, voucher_prefix,
+--      voucher_shape' and nothing more — not which six, not which shapes, not
+--      which prefixes were taken.
+--
+--      Six rows. Activities stay excluded.
 --
 -- WILL IT SURVIVE FUTURE PHASES?
 --   Yes, by design. Every section reads the CATALOGUE, never a list of names:
@@ -182,6 +245,117 @@ masters_md as (
     where mv.active
     group by mv.list_name
   ) x
+),
+
+voucher_types_md as (
+  -- ADDED 21-07-2026. The one master list whose VALUES behave like schema:
+  -- fn_save_voucher reads voucher_shape and voucher_direction off these rows
+  -- and branches on them, so a change here changes what the database demands
+  -- and what it refuses. Same earned exception as chart_of_accounts and
+  -- posting_rules. Inactive rows are shown too — a deactivated voucher type
+  -- still owns its prefix and its serial series, which matters when choosing
+  -- a prefix for a new one.
+  select string_agg(
+           '- `' || mv.code || '` ' || mv.label ||
+           '  | shape **' || coalesce(mv.voucher_shape, '(none)') || '**' ||
+           '  | direction ' || coalesce(mv.voucher_direction, '(none)') ||
+           '  | prefix `' || coalesce(mv.voucher_prefix, '(none)') || '`' ||
+           case when not mv.active then '  **INACTIVE**' else '' end ||
+           coalesce('  -- ' || left(mv.notes, 120), ''),
+           E'\n' order by mv.code) as md
+  from master_values mv
+  where mv.list_name = 'VOUCHER_TYPE'
+),
+
+accounts_md as (
+  -- Reference data that behaves like schema (§10.3). Provisional pending the
+  -- CA, and every posting resolves to one of these codes.
+  select string_agg(
+           '- `' || a.account_code || '` ' || a.name ||
+           '  *(' || a.account_type || ')*' ||
+           case when not a.active then '  **INACTIVE**' else '' end ||
+           coalesce('  | ' || x.attrs, ''),
+           E'\n' order by a.account_code) as md
+  from chart_of_accounts a
+  left join lateral (
+    -- extras read from the row, so a column added later shows up untouched
+    select string_agg(kv.key || '=' || kv.value, ', ' order by kv.key) as attrs
+    from jsonb_each_text(to_jsonb(a)) kv
+    where kv.value is not null
+      and kv.key not in ('account_code','name','account_type','active',
+                         'created_at','notes','effective_from','effective_to')
+  ) x on true
+),
+
+posting_rules_md as (
+  -- The mapping that decides which account every line lands on. One wrong row
+  -- here silently misposts everything matching it.
+  select string_agg(
+           '- **' || r.rule_kind || '** `' || r.match_code || '`' ||
+           coalesce(' entity=' || r.match_entity, '') ||
+           coalesce(' capex='  || r.match_capex,  '') ||
+           ' -> out `' || r.account_out || '`' ||
+           coalesce(' / in `' || r.account_in || '`', '') ||
+           ' from ' || to_char(r.effective_from, 'DD/MM/YYYY') ||
+           coalesce(' to ' || to_char(r.effective_to, 'DD/MM/YYYY'), '') ||
+           coalesce('  -- ' || left(r.notes, 80), ''),
+           E'\n' order by r.rule_kind, r.match_code, r.effective_from desc) as md
+  from posting_rules r
+),
+
+permissions_md as (
+  -- Who may do what. Read as a matrix: one line per capability, the roles
+  -- that hold it listed. A capability nobody holds is a capability nobody can
+  -- exercise, and that is worth seeing at a glance.
+  select string_agg(
+           '- `' || p.capability || '` — ' ||
+           coalesce(string_agg_roles, '**nobody**'),
+           E'\n' order by p.capability) as md
+  from (
+    select capability,
+           string_agg(role, ', ' order by role) filter (where allowed) as string_agg_roles
+    from permissions
+    group by capability
+  ) p
+),
+
+security_md as (
+  -- RLS on/off per table, its policies, and which API roles may read what.
+  -- Supabase exposes tables through PostgREST as anon and authenticated, so
+  -- a missing grant and a restrictive policy look identical from the app.
+  --
+  -- 21-07-2026 FIX: pg_policy.polcmd is "char", and text || "char" is
+  -- ambiguous (42725) — it failed at parse time, so this whole query would
+  -- not run at all. Cast explicitly and spell the command out.
+  select
+    coalesce((
+      select string_agg(
+               '- **' || c.relname || '** RLS ' ||
+               case when c.relrowsecurity then 'ENABLED' else 'disabled' end ||
+               coalesce('  | policies: ' || (
+                 select string_agg(
+                          pol.polname || ' (' ||
+                          case pol.polcmd::text
+                            when 'r' then 'SELECT'
+                            when 'a' then 'INSERT'
+                            when 'w' then 'UPDATE'
+                            when 'd' then 'DELETE'
+                            when '*' then 'ALL'
+                            else pol.polcmd::text
+                          end || ')', ', ')
+                 from pg_policy pol where pol.polrelid = c.oid), '') ||
+               coalesce('  | select: ' || (
+                 select string_agg(g.grantee, ', ' order by g.grantee)
+                 from information_schema.role_table_grants g
+                 where g.table_schema = 'public'
+                   and g.table_name = c.relname
+                   and g.privilege_type = 'SELECT'
+                   and g.grantee in ('anon','authenticated')), '  | select: **none**'),
+               E'\n' order by c.relname)
+      from pg_class c
+      join pg_namespace n on n.oid = c.relnamespace and n.nspname = 'public'
+      where c.relkind in ('r','p','v','m')
+    ), '_none_') as md
 )
 
 select
@@ -197,5 +371,12 @@ select
   '## Views' || E'\n\n' || coalesce((select md from views_md), '_none_') || E'\n\n' ||
   '## Functions and trigger functions' || E'\n\n' || coalesce((select md from functions_md), '_none_') || E'\n\n' ||
   '## Config' || E'\n\n' || coalesce((select md from config_md), '_none_') || E'\n\n' ||
-  '## Master lists' || E'\n\n' || coalesce((select md from masters_md), '_none_')
+  '## Master lists' || E'\n\n' || coalesce((select md from masters_md), '_none_') || E'\n\n' ||
+  '## Voucher types' || E'\n\n' ||
+  '*The one master list whose values behave like schema: fn_save_voucher branches on shape and direction.*' || E'\n\n' ||
+  coalesce((select md from voucher_types_md), '_none_') || E'\n\n' ||
+  '## Chart of accounts' || E'\n\n' || coalesce((select md from accounts_md), '_none_') || E'\n\n' ||
+  '## Posting rules' || E'\n\n' || coalesce((select md from posting_rules_md), '_none_') || E'\n\n' ||
+  '## Permissions — who may do what' || E'\n\n' || coalesce((select md from permissions_md), '_none_') || E'\n\n' ||
+  '## Row-level security and API grants' || E'\n\n' || coalesce((select md from security_md), '_none_')
   as schema_markdown;
