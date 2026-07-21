@@ -1281,7 +1281,7 @@ export default function ExpenseVoucher({
                             amount = String(q * rate);
                           patchRow(i, j, { rate: e.target.value, amount });
                         }}
-                        onFocus={() => setHelp(isContract ? "Rate per unit of the task's quantity — ₹ per acre, per foot, per tree." : "Rate per day for this person.")}
+                        onFocus={() => setHelp(num(r.mandays) !== null ? "Rate per day for this person." : "Days is blank, so this rate is PER UNIT of the task's quantity — ₹ per acre, per tree, per foot. Fill days to make it per-day.")}
                       />
                     </div>
 
