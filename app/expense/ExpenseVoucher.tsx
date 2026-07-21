@@ -68,6 +68,8 @@ export type MasterRow = {
   list_name: string;
   code: string;
   label: string;
+  /** Comma-separated search terms (§3F2). "cow" must find MILKING WAGES. */
+  aliases: string | null;
   sort_order: number;
   required_unit: string | null;
   mode_kind: string | null;
@@ -179,6 +181,21 @@ function num(s: string): number | null {
 }
 
 /**
+ * Auto-insert the slashes of DD/MM/YYYY as digits are typed, without fighting
+ * deletion or the shorthand parseDMY accepts (21/7, 21/7/26). Slashes are only
+ * ADDED at the natural boundaries; whatever the user types herself is left be.
+ */
+function autoSlashDMY(prev: string, next: string): string {
+  if (next.length < prev.length) return next; // deleting - do not fight it
+  const v = next.replace(/\/{2,}/g, "/");
+  if (/^\d{2}$/.test(v)) return v + "/";
+  if (/^\d{3}$/.test(v)) return v.slice(0, 2) + "/" + v[2];
+  if (/^\d{2}\/\d{2}$/.test(v)) return v + "/";
+  if (/^\d{2}\/\d{3}$/.test(v)) return v.slice(0, 5) + "/" + v.slice(5);
+  return v;
+}
+
+/**
  * Amount in words, Indian system — the extra-zero catcher under the voucher
  * total (§5). Whole rupees only; paise are not read aloud on a wage paper.
  */
@@ -219,7 +236,19 @@ function inrWords(n: number): string {
 // move, Enter to pick, Escape to close. Never pre-selects (§5A).
 // ---------------------------------------------------------------------------
 
-type ComboItem = { code: string; label: string; hint?: string };
+type ComboItem = {
+  code: string;
+  label: string;
+  hint?: string;
+  /**
+   * Extra words this item should be findable by (§3F2). NOT displayed — the
+   * list stays readable; only the matching widens. Seeded in SQL files 19 and
+   * 20 after reading three years of narrations: typing "cow", "goat", "sheep",
+   * "Dr fees" or "seema pul" returned NOTHING before this, because no
+   * livestock activity contains those words in its code or label.
+   */
+  search?: string | null;
+};
 
 function Combo({
   items,
@@ -252,7 +281,9 @@ function Combo({
     return items
       .filter(
         (i) =>
-          i.code.toUpperCase().includes(q) || i.label.toUpperCase().includes(q),
+          i.code.toUpperCase().includes(q) ||
+          i.label.toUpperCase().includes(q) ||
+          (i.search ?? "").toUpperCase().includes(q),
       )
       .slice(0, 12);
   }, [items, text]);
@@ -334,6 +365,18 @@ function Combo({
 // ---------------------------------------------------------------------------
 // The screen
 // ---------------------------------------------------------------------------
+
+/**
+ * What does the rate in this row MEAN right now? Days filled -> per day. Days
+ * blank -> per unit of the TASK's quantity, named from the task's unit, so the
+ * column reads "Rate ₹/tree", "Rate ₹/head", "Rate ₹/acre" instead of leaving
+ * her to infer it from an empty box two columns to the left.
+ */
+function rateBasis(t: EditTask, r: EditRow): string {
+  if (num(r.mandays) !== null) return "/day";
+  if (t.unit) return "/" + t.unit.toLowerCase();
+  return "";
+}
 
 let nextKey = 1;
 function freshRow(): EditRow {
@@ -501,13 +544,11 @@ export default function ExpenseVoucher({
     setTasks((ts) => ts.filter((_, k) => k !== i));
   }
 
-  /** Flat DB line number (1-based) for task i, row j — for refusal mapping. */
-  function lineNoOf(i: number, j: number): number {
-    let n = 0;
-    for (let k = 0; k < i; k++) n += tasks[k].rows.length;
-    return n + j + 1;
-  }
-  /** The reverse: which task/row does "Line N" in a DB message point at? */
+  /**
+   * Which task and row does "Line N" in a database refusal point at? The
+   * database numbers LINES, not tasks — three tasks of two people each refuses
+   * at "Line 5", the first row of task 3.
+   */
   const dbErrorLine: { taskIdx: number; rowIdx: number } | null = useMemo(() => {
     if (!dbError) return null;
     const m = dbError.match(/Line (\d+)/);
@@ -714,7 +755,10 @@ export default function ExpenseVoucher({
   // ---- save ----------------------------------------------------------------
   async function doSave() {
     if (!canSave) return;
-    if (ambers.length > 0 && !confirmArmed) {
+    // ALWAYS show the summary first, warnings or not (owner, 21/07). A saved
+    // row is immutable (§6): it is superseded or reversed, never edited. The
+    // one cheap moment to catch a wrong figure is before it exists.
+    if (!confirmArmed) {
       setConfirmArmed(true);
       return;
     }
@@ -848,11 +892,13 @@ export default function ExpenseVoucher({
     code: a.code,
     label: a.label,
     hint: a.required_unit ? `expects ${a.required_unit}` : undefined,
+    search: a.aliases,
   }));
   const costObjectItems: ComboItem[] = costObjects.map((c) => ({
     code: c.code,
     label: c.label,
     hint: c.land_based ? undefined : "no farm asked",
+    search: c.aliases,
   }));
 
   const headerPocketBalance =
@@ -903,7 +949,10 @@ export default function ExpenseVoucher({
             <input
               className={inputCls}
               value={dateText}
-              onChange={(e) => setDateText(e.target.value)}
+              placeholder="DD/MM/YYYY"
+              onChange={(e) =>
+                setDateText(autoSlashDMY(dateText, e.target.value))
+              }
               onFocus={() => setHelp("When the cash actually moved. DD/MM/YYYY — shorthand like 21/7 works.")}
             />
           </div>
@@ -912,7 +961,10 @@ export default function ExpenseVoucher({
             <input
               className={inputCls}
               value={periodFromText}
-              onChange={(e) => setPeriodFromText(e.target.value)}
+              placeholder="DD/MM/YYYY"
+              onChange={(e) =>
+                setPeriodFromText(autoSlashDMY(periodFromText, e.target.value))
+              }
               onFocus={() => setHelp("The week the work covers — often not the payment date. Every task inherits this.")}
             />
           </div>
@@ -921,7 +973,10 @@ export default function ExpenseVoucher({
             <input
               className={inputCls}
               value={periodToText}
-              onChange={(e) => setPeriodToText(e.target.value)}
+              placeholder="DD/MM/YYYY"
+              onChange={(e) =>
+                setPeriodToText(autoSlashDMY(periodToText, e.target.value))
+              }
               onFocus={() => setHelp("End of the work period.")}
             />
           </div>
@@ -955,7 +1010,10 @@ export default function ExpenseVoucher({
             <input
               className={inputCls}
               value={docRefDateText}
-              onChange={(e) => setDocRefDateText(e.target.value)}
+              placeholder="DD/MM/YYYY"
+              onChange={(e) =>
+                setDocRefDateText(autoSlashDMY(docRefDateText, e.target.value))
+              }
               onFocus={() => setHelp("The date written on the paper — not the payment date.")}
             />
           </div>
@@ -968,7 +1026,6 @@ export default function ExpenseVoucher({
         const farmBlocks = blocks.filter(
           (b) => b.parent_farm === t.farm || b.code === "YET TO ASSIGN",
         );
-        const isContract = t.cost_nature === "CONTRACT";
         const isLabour = t.cost_nature === "LABOUR" || t.cost_nature === "";
         const tErr = dbErrorLine?.taskIdx === i;
 
@@ -1183,7 +1240,7 @@ export default function ExpenseVoucher({
                   <div
                     key={r.key}
                     className={
-                      "grid grid-cols-2 md:grid-cols-12 gap-2 items-end py-1.5 rounded " +
+                      "grid grid-cols-2 md:grid-cols-12 gap-2 items-start py-1.5 rounded " +
                       (rErr ? "ring-1 ring-red-500 px-1" : "")
                     }
                   >
@@ -1210,7 +1267,7 @@ export default function ExpenseVoucher({
                           setHelp("Who did this work. Type to search; a new name can be added without leaving the voucher.")
                         }
                       />
-                      <div className="flex gap-3 mt-0.5">
+                      <div className="flex gap-3 mt-0.5 flex-wrap">
                         <label className="text-xs text-muted-foreground flex items-center gap-1">
                           <input
                             type="checkbox"
@@ -1261,12 +1318,20 @@ export default function ExpenseVoucher({
                                 : r.amount,
                           });
                         }}
-                        onFocus={() => setHelp("Labour days. Halves are normal — 8.5, 10.5. Amount fills itself; overtype if the slip differs.")}
+                        onFocus={() => setHelp("Labour days. Halves are normal — 8.5, 10.5. LEAVE BLANK for piece-rate work: then the rate is per unit of the task's quantity — ₹3 per tree, ₹60 per goat, ₹40 per tank.")}
                       />
                     </div>
 
                     <div className="md:col-span-2">
-                      {j === 0 && <label className={labelCls}>Rate ₹</label>}
+                      {j === 0 && (
+                        <label className={labelCls}>
+                          {/* THE FIX FOR THE INVISIBLE MODE SWITCH.
+                              "Rate" meant two different things depending on
+                              whether a DIFFERENT box was empty, and nothing
+                              said so. Now the label itself says which. */}
+                          Rate ₹{rateBasis(t, r)}
+                        </label>
+                      )}
                       <input
                         className={inputCls + " text-right tabular-nums"}
                         value={r.rate}
@@ -1275,13 +1340,30 @@ export default function ExpenseVoucher({
                           const days = num(r.mandays);
                           const q = num(t.qty);
                           let amount = r.amount;
+                          // Days filled -> days x rate.
+                          // Days BLANK on the task's FIRST row -> the rate
+                          // belongs to the QUANTITY (file 09: "Rs.20 per tree,
+                          // 956 trees"), WHATEVER the cost nature. Piece-rate
+                          // labour is still LABOUR: the estate pays Rs.3 per
+                          // tree for root feeding and Rs.60 per goat for
+                          // vaccination, both under LABOUR/PROFESSIONAL.
+                          // Rows 2..n hold no quantity, so their amount is
+                          // typed off the paper.
                           if (days !== null && rate !== null)
                             amount = String(days * rate);
-                          else if (isContract && j === 0 && q !== null && rate !== null)
+                          else if (j === 0 && q !== null && rate !== null)
                             amount = String(q * rate);
                           patchRow(i, j, { rate: e.target.value, amount });
                         }}
-                        onFocus={() => setHelp(num(r.mandays) !== null ? "Rate per day for this person." : "Days is blank, so this rate is PER UNIT of the task's quantity — ₹ per acre, per tree, per foot. Fill days to make it per-day.")}
+                        onFocus={() =>
+                          setHelp(
+                            num(r.mandays) !== null
+                              ? "Rate per DAY for this person, because days are filled."
+                              : t.unit
+                                ? `Days is blank, so this rate is PER ${t.unit} — the task's quantity × this rate fills the amount. Fill days to make it per-day.`
+                                : "Days is blank, so this rate is per unit of the task's quantity. Write the quantity and unit above, or fill days to make it per-day.",
+                          )
+                        }
                       />
                     </div>
 
@@ -1322,10 +1404,11 @@ export default function ExpenseVoucher({
                       </select>
                     </div>
 
-                    <div className="md:col-span-1 flex items-center gap-2">
+                    <div className="md:col-span-1">
+                      {j === 0 && <label className={labelCls}>&nbsp;</label>}
                       <button
                         type="button"
-                        className="text-xs text-muted-foreground hover:text-red-600 mt-4"
+                        className="text-xs text-muted-foreground hover:text-red-600 py-1.5"
                         onClick={() => removeRow(i, j)}
                         disabled={t.rows.length === 1}
                         title="Remove this person"
@@ -1500,6 +1583,57 @@ export default function ExpenseVoucher({
           </div>
         )}
 
+        {/* THE CONFIRM STEP. What is about to become immutable, in the
+            paper's own terms: tasks, people, total in words. */}
+        {confirmArmed && (
+          <div className="mt-3 border border-border rounded p-3 text-sm bg-muted/40">
+            <div className="font-medium mb-2">
+              About to save — check against the paper, then confirm.
+            </div>
+            <table className="w-full text-xs mb-2">
+              <tbody>
+                {tasks.map((t, i) => (
+                  <tr key={t.key} className="border-b border-border/50">
+                    <td className="py-1 pr-2 align-top w-8 text-muted-foreground">
+                      {i + 1}
+                    </td>
+                    <td className="py-1 pr-2 align-top">
+                      {[t.farm, t.block && t.block !== "YET TO ASSIGN" ? t.block : null,
+                        t.cost_object, t.activity]
+                        .filter(Boolean)
+                        .join(" · ")}
+                      {t.qty ? (
+                        <span className="text-muted-foreground">
+                          {" "}· {t.qty} {t.unit}
+                        </span>
+                      ) : null}
+                    </td>
+                    <td className="py-1 pr-2 align-top text-muted-foreground">
+                      {t.rows.length} {t.rows.length === 1 ? "person" : "people"}
+                    </td>
+                    <td className="py-1 align-top text-right tabular-nums">
+                      {formatINR(taskSums[i])}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="flex justify-between font-medium">
+              <span>
+                {tasks.length} task{tasks.length === 1 ? "" : "s"} ·{" "}
+                {tasks.reduce((n, t) => n + t.rows.length, 0)} rows
+              </span>
+              <span className="tabular-nums">{formatINR(voucherTotal)}</span>
+            </div>
+            <div className="text-xs text-muted-foreground">
+              {inrWords(voucherTotal)}
+            </div>
+            <div className="text-xs text-muted-foreground mt-1">
+              Once saved a row cannot be edited — only reversed or superseded.
+            </div>
+          </div>
+        )}
+
         <div className="mt-4 flex items-center gap-3">
           <button
             type="button"
@@ -1517,10 +1651,10 @@ export default function ExpenseVoucher({
             {saving
               ? "Saving…"
               : confirmArmed
-                ? `Confirm — save with ${ambers.length} warning${ambers.length === 1 ? "" : "s"}`
-                : ambers.length > 0
-                  ? `Save with ${ambers.length} warning${ambers.length === 1 ? "" : "s"}`
-                  : "Save voucher"}
+                ? ambers.length > 0
+                  ? `Confirm and save — ${ambers.length} warning${ambers.length === 1 ? "" : "s"}`
+                  : "Confirm and save"
+                : "Review and save"}
           </button>
           {confirmArmed && (
             <button
