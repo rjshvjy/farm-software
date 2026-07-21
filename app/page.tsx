@@ -33,6 +33,21 @@
 //   means YES, the trial behaviour. "Temporary" becomes permanent unless
 //   there is a switch, so here is the switch.
 //
+// CHANGED 21-07-2026
+//
+//   "Bought something" now points at /expense, not /entry. The business
+//   expense voucher was rebuilt around the shape of the estate's weekly wage
+//   paper — voucher, task, row (§19) — because the old flat screen could not
+//   express thirteen numbered workings without repeating the acreage on every
+//   labour line. /entry's route is gone; its files remain only because /sales
+//   still imports shared types from them.
+//
+//   "Household spending" is new and deliberately greyed. Household left the
+//   farm books in v3.2 (§20): it is drawings, not an expense. The tile is
+//   shown before the screen exists so the split is visible — she will meet it
+//   on her first real wage paper, where cooking wages sits in the middle of
+//   the farm work and belongs somewhere else.
+//
 // WHY IT READS CAPABILITIES ONE BY ONE
 //
 //   fn_has_capability is SECURITY DEFINER, so it needs no grant on the
@@ -88,8 +103,20 @@ const GROUPS: Group[] = [
     tiles: [
       {
         title: "Bought something",
-        hint: "Wages, fertiliser, diesel, repairs — anything the estate paid for, or now owes for.",
-        href: "/entry",
+        hint: "Farm wages, fertiliser, diesel, repairs — anything the estate paid for, or now owes for. Household spending has its own voucher below.",
+        href: "/expense",
+        needs: "ENTER_VOUCHER",
+      },
+      {
+        // v3.2 §20: household spending left the farm books entirely. It is
+        // drawings — Dr 3020, never an expense, never in the P&L — with its
+        // own voucher type, its own activity list and its own screen. The
+        // tile exists now, greyed, so the split is visible before the screen
+        // is built: the accountant meets it on her first real wage paper,
+        // where cooking wages sits among the farm work.
+        title: "Household spending",
+        hint: "Cooking, groceries, house repairs, the shepherds' house nights. Not a farm cost — it is the owner drawing value out, and it never reaches the P&L.",
+        href: null,
         needs: "ENTER_VOUCHER",
       },
       {
