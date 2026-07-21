@@ -86,10 +86,12 @@ select fn_master_append(
 --   FARM       everything else the estate does on the land.
 --
 -- JUDGMENT CALLS, recorded so they are arguable rather than buried:
---   ELECTRICITY, UTILITIES -> FARM. Pumpsets and farm connections dominate;
---     a genuine house electricity bill is entered on the drawings voucher
---     under HOUSE REPAIRS/PERSONAL MISC until the owner promotes a house
---     utilities activity — a master row, never a deployment (§1.9).
+--   ELECTRICITY -> FARM (posting rule already sends it to 5020, Land &
+--     Property Upkeep: pumpsets and farm connections dominate).
+--   UTILITIES -> HOUSEHOLD. An earlier draft of this file called it FARM on
+--     the pumpset argument; the POSTING RULES had already ruled, sending
+--     UTILITIES to 3020. Corrected 21-07 after reading them. The rule table
+--     is evidence, not background — same lesson as the constraint names.
 --   SHEPHERD WAGES -> FARM. Goat and cow are FINAL cost objects (§3A) —
 --     livestock that produces for sale is farm, settled 21-07.
 --   BUILDING & PROPERTY REPAIRS -> FARM (sheds, walls); the house has its
@@ -109,7 +111,8 @@ update master_values set group_code = 'HOUSEHOLD'
      'COOKING WAGES', 'HOUSEHOLD STAFF', 'KITCHEN & PROVISIONS',
      'HOUSE REPAIRS', 'MEDICAL', 'EDUCATION', 'CLOTHING & PERSONAL',
      'FUNCTIONS, GIFTS & GUESTS', 'RELIGIOUS & CHARITY', 'PETS',
-     'TRAVEL-PERSONAL', 'VEHICLE-PERSONAL', 'PERSONAL MISC'
+     'TRAVEL-PERSONAL', 'VEHICLE-PERSONAL', 'PERSONAL MISC',
+     'UTILITIES'
    );
 
 -- shared people: offered on BOTH expense and drawings screens (§20.4)
@@ -229,12 +232,40 @@ on conflict (list_name, code) do nothing;
 
 
 -- ============================================================================
+-- 4b · the posting rule for COOKING WAGES
+-- ----------------------------------------------------------------------------
+-- STRICTLY SPEAKING UNNECESSARY, and added anyway. fn_generate_postings tests
+-- the ENTITY before it consults the rules:
+--     elsif p_row.entity = 'PERSONAL' then v_side := '3020';
+-- so any line on a drawings voucher lands on 3020 whatever its activity.
+--
+-- But every other household activity carries an explicit 3020 rule, and a
+-- rule table with one member missing stops being readable as the answer to
+-- 'where does this land'. Someone checking COOKING WAGES here would find
+-- nothing and conclude it was unmapped. Rs.0 of ambiguity for one row.
+--
+-- Dr 3020 Owner Drawings: the owner receives value taken out of the business.
+-- effective_from matches the rest of the seeded rules.
+-- ============================================================================
+
+insert into posting_rules
+  (rule_kind, match_code, account_out, effective_from, notes)
+select 'ACTIVITY', 'COOKING WAGES', '3020', date '2020-01-01',
+       'Household cook. Drawings, never a farm cost (v3.2 section 20). '
+       'Belt-and-braces: the PERSONAL entity branch in fn_generate_postings '
+       'reaches 3020 before this rule is consulted.'
+where not exists (
+  select 1 from posting_rules
+   where rule_kind = 'ACTIVITY' and match_code = 'COOKING WAGES');
+
+
+-- ============================================================================
 -- 5 · verify — read back what this file claims
 -- ----------------------------------------------------------------------------
--- Expected: cooking=1 · household=14 (13 + COOKING WAGES) · shared=3 ·
--- income=7 · funding=5 · weed=4 · farm=45 · ungrouped=0 (77 total activities)
--- · acre_units=4 · drawings_type=1. Any other number: read section 2's lists
--- against the dump before touching anything.
+-- Expected: cooking=1 · household=14 · shared=3 · income=7 · funding=5 ·
+-- weed=4 · farm=44 · ungrouped=0 (77 total activities) · acre_units=4 ·
+-- drawings_type=1 · cooking_rule=1. Any other number: read section 2's lists
+-- against the live dump before touching anything.
 -- ============================================================================
 
 select 'COOKING WAGES seeded' as checked, count(*) as n
@@ -270,7 +301,11 @@ select 'required_unit ACRE set (want 4 new)', count(*) from master_values
 union all
 select 'DRAWINGS voucher type', count(*) from master_values
  where list_name = 'VOUCHER_TYPE' and code = 'DRAWINGS'
-   and voucher_shape = 'DRAWINGS' and voucher_prefix = 'DV';
+   and voucher_shape = 'DRAWINGS' and voucher_prefix = 'DV'
+union all
+select 'COOKING WAGES posting rule', count(*) from posting_rules
+ where rule_kind = 'ACTIVITY' and match_code = 'COOKING WAGES'
+   and account_out = '3020';
 
 -- ============================================================================
 -- END OF FILE 17. Regenerate DB_SCHEMA_CURRENT so the snapshot carries all of
