@@ -134,8 +134,12 @@ async function ExpenseLoader() {
       // group_code, is_heading and land_based are new here (files 17, 17a,
       // 18a). They are what let this screen show farm work only, hide the six
       // group headings, and stop asking for a farm on a herd.
+      // aliases (files 19, 20) is what makes the lists FINDABLE: typing "cow",
+      // "goat", "sheep", "Dr fees" or "seema pul" returned nothing at all
+      // before, because no livestock activity contains those words in its code
+      // or label. The column existed since §3F2 and was read by nothing.
       .select(
-        "list_name, code, label, sort_order, required_unit, mode_kind, parent_farm, notes, group_code, is_heading, land_based",
+        "list_name, code, label, sort_order, required_unit, mode_kind, parent_farm, notes, group_code, is_heading, land_based, aliases",
       )
       .eq("active", true)
       .order("sort_order", { ascending: true }),
