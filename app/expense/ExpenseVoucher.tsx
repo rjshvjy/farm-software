@@ -248,6 +248,22 @@ type ComboItem = {
    * livestock activity contains those words in its code or label.
    */
   search?: string | null;
+  /**
+   * The section this item sits under when the list is browsed unfiltered
+   * (§16.13 group_code). Items with a group render under headings, like the
+   * add-person select; items without one render as a plain flat list. Only
+   * affects the EMPTY/browse view — typing collapses everything to one ranked
+   * list regardless of group.
+   */
+  group?: string | null;
+  /**
+   * When true, this item's whole GROUP floats to the top of the browse list
+   * (e.g. livestock activities once COW/GOAT is the cost object). Promote, do
+   * NOT hide: FREIGHT for cattle feed is not a livestock activity but must
+   * stay reachable, so nothing is filtered out — the relevant group just
+   * leads.
+   */
+  promoteGroup?: boolean;
 };
 
 function Combo({
@@ -275,18 +291,55 @@ function Combo({
   const chosen = items.find((i) => i.code === value) ?? null;
   const shown = open ? text : chosen ? chosen.label : "";
 
-  const matches = useMemo(() => {
+  // TYPING -> one flat, ranked list (spec §690: ranked by use, matched on
+  // substring, aliases included). BROWSING (empty box) -> the whole list,
+  // grouped under headings, so she can SEE there are 78 activities and scroll,
+  // instead of the first twelve with no sign of more.
+  const typing = text.trim() !== "";
+
+  const flatMatches = useMemo(() => {
     const q = text.trim().toUpperCase();
-    if (!q) return items.slice(0, 12);
-    return items
-      .filter(
-        (i) =>
-          i.code.toUpperCase().includes(q) ||
-          i.label.toUpperCase().includes(q) ||
-          (i.search ?? "").toUpperCase().includes(q),
-      )
-      .slice(0, 12);
+    if (!q) return [];
+    return items.filter(
+      (i) =>
+        i.code.toUpperCase().includes(q) ||
+        i.label.toUpperCase().includes(q) ||
+        (i.search ?? "").toUpperCase().includes(q),
+    );
+    // No .slice: the list scrolls. Hiding matches is how "cow" looked broken.
   }, [items, text]);
+
+  // Browse view: items bucketed by group, groups alphabetical, items
+  // alphabetical within each — predictable to scan (SAMPLE mode has no usage
+  // data to rank by anyway). A promoted group leads; ungrouped items, if any,
+  // fall under a final "Other" heading rather than vanishing.
+  const grouped = useMemo(() => {
+    if (typing) return [];
+    const buckets: Record<string, ComboItem[]> = {};
+    let promoted: string | null = null;
+    for (const i of items) {
+      const g = i.group || "Other";
+      (buckets[g] ??= []).push(i);
+      if (i.promoteGroup && i.group) promoted = i.group;
+    }
+    let names = Object.keys(buckets).sort((a, b) => a.localeCompare(b));
+    if (promoted)
+      names = [promoted, ...names.filter((n) => n !== promoted)];
+    return names.map((name) => ({
+      name,
+      items: buckets[name].sort((a, b) => a.label.localeCompare(b.label)),
+    }));
+  }, [items, typing]);
+
+  // A single flat sequence of the currently-visible codes, so arrow keys and
+  // Enter work identically whether browsing or typing.
+  const visibleCodes = useMemo(
+    () =>
+      typing
+        ? flatMatches.map((m) => m.code)
+        : grouped.flatMap((g) => g.items.map((m) => m.code)),
+    [typing, flatMatches, grouped],
+  );
 
   function pick(code: string) {
     onPick(code);
@@ -318,13 +371,13 @@ function Combo({
           if (!open) return;
           if (e.key === "ArrowDown") {
             e.preventDefault();
-            setHi((h) => Math.min(h + 1, matches.length - 1));
+            setHi((h) => Math.min(h + 1, visibleCodes.length - 1));
           } else if (e.key === "ArrowUp") {
             e.preventDefault();
             setHi((h) => Math.max(h - 1, 0));
           } else if (e.key === "Enter") {
             e.preventDefault();
-            if (matches[hi]) pick(matches[hi].code);
+            if (visibleCodes[hi]) pick(visibleCodes[hi]);
           } else if (e.key === "Escape") {
             setOpen(false);
           }
@@ -335,27 +388,67 @@ function Combo({
           (disabled ? "opacity-50 cursor-not-allowed bg-muted" : "")
         }
       />
-      {open && matches.length > 0 && (
-        <div className="absolute z-20 mt-1 w-full max-h-64 overflow-auto border border-input rounded bg-popover shadow">
-          {matches.map((m, i) => (
-            <button
-              key={m.code}
-              type="button"
-              onMouseDown={(e) => {
-                e.preventDefault();
-                pick(m.code);
-              }}
-              className={
-                "block w-full text-left px-2 py-1.5 text-sm " +
-                (i === hi ? "bg-muted" : "hover:bg-muted/60")
-              }
-            >
-              <span className="font-medium">{m.label}</span>
-              {m.hint ? (
-                <span className="text-muted-foreground"> · {m.hint}</span>
-              ) : null}
-            </button>
-          ))}
+      {open && (typing ? flatMatches.length > 0 : grouped.length > 0) && (
+        <div className="absolute z-20 mt-1 w-full max-h-72 overflow-auto border border-input rounded bg-popover shadow">
+          {typing
+            ? flatMatches.map((m, i) => (
+                <button
+                  key={m.code}
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    pick(m.code);
+                  }}
+                  className={
+                    "block w-full text-left px-2 py-1.5 text-sm " +
+                    (i === hi ? "bg-muted" : "hover:bg-muted/60")
+                  }
+                >
+                  <span className="font-medium">{m.label}</span>
+                  {m.hint ? (
+                    <span className="text-muted-foreground"> · {m.hint}</span>
+                  ) : null}
+                </button>
+              ))
+            : (() => {
+                // Browse view. A running counter maps each rendered row back to
+                // its flat index in visibleCodes, so highlight tracks the
+                // keyboard across section headers.
+                let flat = -1;
+                return grouped.map((section) => (
+                  <div key={section.name}>
+                    <div className="sticky top-0 bg-muted/95 backdrop-blur px-2 py-1 text-xs font-medium text-muted-foreground border-b border-border">
+                      {section.name}
+                    </div>
+                    {section.items.map((m) => {
+                      flat += 1;
+                      const idx = flat;
+                      return (
+                        <button
+                          key={m.code}
+                          type="button"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            pick(m.code);
+                          }}
+                          className={
+                            "block w-full text-left px-2 py-1.5 text-sm " +
+                            (idx === hi ? "bg-muted" : "hover:bg-muted/60")
+                          }
+                        >
+                          <span className="font-medium">{m.label}</span>
+                          {m.hint ? (
+                            <span className="text-muted-foreground">
+                              {" "}
+                              · {m.hint}
+                            </span>
+                          ) : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ));
+              })()}
         </div>
       )}
     </div>
@@ -888,17 +981,60 @@ export default function ExpenseVoucher({
       })),
     [parties],
   );
-  const activityItems: ComboItem[] = activities.map((a) => ({
+  // Base activity items carry their group_code so the browse view can section
+  // them (§16.13). Livestock activities are tagged so a task on COW/GOAT can
+  // float that whole section to the top — promote, never hide.
+  const LIVESTOCK_ACTIVITIES = useMemo(
+    () =>
+      new Set(
+        activities
+          .filter((a) => a.group_code === "FARM")
+          .map((a) => a.code)
+          .filter((c) =>
+            [
+              "SHED CLEANING",
+              "SHEPHERD WAGES",
+              "MILKING WAGES",
+              "VET & MEDICINE",
+              "FEED",
+              "FODDER CUTTING",
+              "SHED CONSTRUCTION",
+              "LIVESTOCK GENERAL",
+            ].includes(c),
+          ),
+      ),
+    [activities],
+  );
+  const activityItemsBase: ComboItem[] = activities.map((a) => ({
     code: a.code,
     label: a.label,
     hint: a.required_unit ? `expects ${a.required_unit}` : undefined,
     search: a.aliases,
+    // Livestock work is scattered under FARM; give it its own browse section
+    // so it reads as a block rather than hiding among 50 crop activities.
+    group: LIVESTOCK_ACTIVITIES.has(a.code) ? "LIVESTOCK" : a.group_code,
   }));
+
+  /**
+   * Activities for one task. Same list every time — nothing is filtered out,
+   * so FREIGHT for cattle feed stays reachable — but when the task's cost
+   * object is a herd, the LIVESTOCK section is flagged to lead the browse
+   * list (§690's "ranks by use" made to mean something in SAMPLE mode, where
+   * there is no usage yet to rank by).
+   */
+  function activityItemsFor(costObject: string): ComboItem[] {
+    const herd = costObject && (landBased[costObject] ?? true) === false;
+    if (!herd) return activityItemsBase;
+    return activityItemsBase.map((it) =>
+      it.group === "LIVESTOCK" ? { ...it, promoteGroup: true } : it,
+    );
+  }
   const costObjectItems: ComboItem[] = costObjects.map((c) => ({
     code: c.code,
     label: c.label,
     hint: c.land_based ? undefined : "no farm asked",
     search: c.aliases,
+    group: c.land_based ? "CROPS & LAND" : "LIVESTOCK & OTHER",
   }));
 
   const headerPocketBalance =
@@ -1121,7 +1257,7 @@ export default function ExpenseVoucher({
               <div className="col-span-2">
                 <label className={labelCls}>Activity</label>
                 <Combo
-                  items={activityItems}
+                  items={activityItemsFor(t.cost_object)}
                   value={t.activity}
                   onPick={(code) => {
                     const req = requiredUnit[code];
